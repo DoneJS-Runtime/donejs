@@ -1,0 +1,124 @@
+# donejs
+
+A Node.js-compatible JavaScript runtime written in Go.
+
+`donejs` speaks the Node.js API - `require()`, `fs`, `path`, `Buffer`, `http`,
+`stream`, `crypto`, `zlib`, `events`, ... - but the implementation is Go
+(ECMAScript execution via [goja](https://github.com/dop251/goja)) instead of
+V8 + libuv + JavaScript.
+
+```
+donejs script.js arg1 arg2
+donejs -e "console.log(process.argv)"
+```
+
+## Build
+
+```sh
+go build -o donejs .
+go test ./...            # unit tests
+./donejs --selftest      # 34 runtime API checks
+```
+
+## CLI
+
+| Option | Meaning |
+| --- | --- |
+| `-e`, `--eval <code>` | evaluate JavaScript instead of running a file |
+| `--allow-exec` | allow `child_process` to spawn executables (denied by default) |
+| `--selftest` | run the built-in API self test |
+| `-v`, `--version` | print the version |
+| `-h`, `--help` | usage |
+
+## Module coverage
+
+| Module | State |
+| --- | --- |
+| `assert` | complete |
+| `buffer` | complete |
+| `child_process` | implemented, **execution denied unless `--allow-exec`** |
+| `console` | complete |
+| `crypto` | hashes, HMAC, PBKDF2, random bytes, TLS helpers |
+| `events` | `EventEmitter` with `on`/`once`/`off`/`emit`/`prependListener` |
+| `fs` | sync + promise APIs, streams, `ENOENT` with `code` |
+| `fs/promises` | complete |
+| `http` | client + server, keep-alive, chunked bodies |
+| `https` | client + server over TLS |
+| `net` | TCP sockets |
+| `os` | platform, homedir, tmpdir, cpus, memory |
+| `path` | `posix` and `win32` flavours, implemented independently of the host OS |
+| `process` | argv, env, cwd, exit codes, `nextTick`, signals |
+| `querystring` | parse/stringify |
+| `stream` | `Readable`, `Writable`, `Transform`, piping, async iteration |
+| `string_decoder` | implemented |
+| `timers` | `setTimeout`, `setInterval`, `setImmediate` |
+| `url` | `URL`, `URLSearchParams` |
+| `util` | `inspect`, `format`, `promisify`, `types` |
+| `zlib` | gzip/deflate/brotli round trips |
+
+Globals: `console`, `Buffer`, `URL`, `URLSearchParams`, `fetch`, `structuredClone`,
+`queueMicrotask`, `setTimeout`/`setInterval`/`setImmediate`, `TextEncoder`,
+`TextDecoder`, `Intl`, `require`.
+
+## Architecture
+
+```
+main.go                 CLI entry point
+internal/vm/
+  runtime.go            Runtime, global bootstrap, require()
+  loop.go               event loop: timers, jobs, handles, tick queues
+  modules.go            CommonJS loader, module cache, native dispatch
+  builtin/*.js          JavaScript layer of the built-in modules
+  *.go                  native module implementations
+```
+
+* **Native table dispatch.** Every native module exposes `__mod.sync(name, args)`
+  and `__mod.async(name, args)`; the JavaScript layer in `internal/vm/builtin/`
+  turns that into the friendly Node API.
+* **One event loop.** `internal/vm/loop.go` owns timers, the job queue used by
+  native callbacks, and reference counts for open handles and in-flight
+  requests. The process exits when nothing is left to wait for.
+* **Node tick ordering.** `process.nextTick` callbacks are flushed at the end of
+  the entry module's synchronous body, so they run *before* promise
+  microtasks - exactly like Node. `queueMicrotask` uses a separate queue and
+  therefore runs after promise jobs.
+
+## Security
+
+`child_process` is refused by default:
+
+```
+Error: child_process is disabled (pass --allow-exec to enable)
+  code: 'ERR_EXEC_DENIED'
+```
+
+Set `DONEJS_ALLOW_EXEC=1` to allow it for a whole session. `DONEJS_FORCE_EXEC=1`
+additionally bypasses the per-command policy.
+
+## Differences from Node.js
+
+* `process.nextTick` is flushed at the end of the entry module rather than at
+  every event-loop turn, so a `nextTick` scheduled inside a timer callback
+  runs after that callback's promise jobs.
+* Native addons (`.node` files) are not supported.
+* `Intl` is implemented from the CLDR JSON data (not ICU): full locale
+  resolution, plural rules, compact notation, currency/unit patterns,
+  day-period rules and `Intl.supportedValuesOf` catalogs, plus non-Gregorian
+  calendars (`islamic` and its variants, `persian`, `indian`, `roc`, `coptic`,
+  `ethiopic`, `ethioaa`, `buddhist`, `japanese`). Known gaps:
+  * the `hebrew`, `chinese`, `dangi` and `iso8601` calendars are accepted but
+    fall back to Gregorian field values;
+  * `timeZoneName` renders a `GMT±hh:mm` offset instead of the zone's
+    exemplar-city or generic name;
+  * `Intl.DisplayNames` and `Intl.Segmenter` are not implemented.
+* `util.inspect` handles objects, arrays, strings, numbers, errors and dates,
+  but not `Promise` state, `Map`/`Set` entries, `RegExp`, `Symbol`, typed
+  arrays or functions - those render as bare `{}` / `[]`.
+* The event loop implements timers, immediates, socket and HTTP activity -
+  not the full libuv feature set (no `SIGWINCH`/`SIGIO` style poll phases).
+
+## Testing
+
+* `internal/vm/selftest.go` - 34 checks over the public API surface, executed
+  by `donejs --selftest` and by `go test`.
+* `internal/vm/selftest_test.go` - the `go test` wrapper.

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "donepm"
+version = "0.1.0"
+description = "A fast, security-first npm replacement written in Python 3"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "DonePM contributors" }]
+keywords = ["npm", "package-manager", "security", "node"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Build Tools",
+]
+dependencies = []
+
+[project.scripts]
+donepm = "donepm.cli:main"
+
+[project.urls]
+Homepage = "https://example.invalid/donepm"
+
+[tool.setuptools]
+packages = ["donepm"]
