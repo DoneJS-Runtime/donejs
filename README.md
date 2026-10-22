@@ -7,6 +7,10 @@ A Node.js-compatible JavaScript runtime written in Go.
 (ECMAScript execution via [goja](https://github.com/dop251/goja)) instead of
 V8 + libuv + JavaScript.
 
+A from-scratch bytecode compiler + interpreter for a JavaScript subset also
+lives in the tree (`internal/jit/`). It is not wired into the runtime yet - see
+[Experimental: bytecode engine](#experimental-bytecode-engine-internaljit).
+
 ```
 donejs script.js arg1 arg2
 donejs -e "console.log(process.argv)"
@@ -70,6 +74,12 @@ internal/vm/
   modules.go            CommonJS loader, module cache, native dispatch
   builtin/*.js          JavaScript layer of the built-in modules
   *.go                  native module implementations
+internal/jit/           experimental bytecode engine (self-contained JS subset)
+  lexer.go  parser.go  ast.go   front end
+  compiler.go          AST -> stack bytecode
+  bytecode.go          instruction set + FuncProto
+  value.go  object.go  tagged Value, objects, arrays
+  vm.go                interpreter loop
 ```
 
 * **Native table dispatch.** Every native module exposes `__mod.sync(name, args)`
@@ -82,6 +92,42 @@ internal/vm/
   the entry module's synchronous body, so they run *before* promise
   microtasks - exactly like Node. `queueMicrotask` uses a separate queue and
   therefore runs after promise jobs.
+
+## Experimental: bytecode engine (`internal/jit/`)
+
+`internal/jit/` is a self-contained JavaScript engine: lexer, recursive-descent
+parser, AST, stack bytecode compiler, and a bytecode interpreter. It reuses
+nothing from goja so the acceleration techniques can be tried on their own.
+The runtime still runs goja; this package is a standalone experiment.
+
+Design:
+
+* **Tagged `Value`** - a 32-byte struct (`tag`, `float64`, `ref`). Numbers live
+  inline so the arithmetic path allocates nothing.
+* **Stack bytecode** - one operand stack per frame; locals are resolved to slots
+  at compile time, so the interpreter never does a name lookup.
+* **Frame pool** - activations are recycled per function prototype, so the hot
+  call path allocates nothing and does no map lookup.
+* **Dense switch dispatch** - the instruction set is a dense `uint8`, so the Go
+  compiler turns the interpreter loop into a jump table.
+* **Recursive self-reference** - a named function's own name resolves to the
+  function value itself, which is what makes recursion work without a global
+  lookup.
+
+Benchmarks (`go test -run '^$' -bench . ./internal/jit/`, and the same scripts
+through goja and Node 26.11.0, on an i5-7400):
+
+| Benchmark | `internal/jit` | goja | V8 (Node) |
+| --- | --- | --- | --- |
+| `fib(25)` | **25.8 ms** | 43.6 ms | 1.03 ms |
+| `for (i < 1e6) s += i` | **97 ms** | 196 ms | 1.55 ms |
+
+The engine beats goja by 1.7x and 2x respectively. V8 stays far ahead - that
+gap is real JIT (Turbofan), which this interpreter deliberately does not do.
+
+Known limits: it is a subset - no closures, classes, `try`/`catch`, generators,
+`async`, `with`, destructuring, spread, or template literals. Output goes
+through `print`/`console.log`.
 
 ## Security
 

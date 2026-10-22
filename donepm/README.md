@@ -183,6 +183,6 @@ cd donepm
 python3 -m unittest discover -s tests
 ```
 
-75 tests cover the security rules and permission gating, semver ranges, the
+76 tests cover the security rules and permission gating, semver ranges, the
 lockfile round trip, tarball traversal/symlink defences, hoisting, lifecycle
 script gating, and the CLI.
