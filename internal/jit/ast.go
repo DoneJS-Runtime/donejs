@@ -166,12 +166,14 @@ type PatObject struct {
 	Rest  string
 }
 
-// ForOfStmt is `for (x of y)` (Of=true) or `for (x in y)` (Of=false).
+// ForOfStmt is `for (x of y)` (Of=true) or `for (x in y)` (Of=false). Async
+// marks `for await (x of y)`, which iterates an async iterator.
 type ForOfStmt struct {
 	Left  Stmt // VarDecl or ExprStmt
 	Right Expr
 	Body  Stmt
 	Of    bool
+	Async bool
 }
 
 // SwitchStmt is a switch statement.
@@ -221,6 +223,7 @@ type Method struct {
 type ExprStmt struct{ X Expr }
 
 type VarDecl struct {
+	Kind     string // "var" | "let" | "const"
 	Names    []string
 	Inits    []Expr
 	Patterns []Pat // destructuring patterns, parallel to Names when non-nil
@@ -264,6 +267,54 @@ type LabeledStmt struct {
 type FuncDecl struct{ Fn FuncExpr }
 
 type Program struct{ Body []Stmt }
+
+// ---- ES modules ----
+
+// ImportSpecifier binds one name brought in from an ES module.
+type ImportSpecifier struct {
+	Imported    string // name in the source module ('' for default / namespace)
+	Local       string // local binding name
+	IsDefault   bool
+	IsNamespace bool
+}
+
+// ImportDecl is a top-level `import ... from './mod'` statement.
+type ImportDecl struct {
+	Module     string
+	Specifiers []ImportSpecifier
+}
+
+// ExportDefault is `export default <expr>` (or `export default function` /
+// `export default class`, which the parser lowers into ExportValue).
+type ExportDefault struct{ X Expr }
+
+// ExportNamed is `export { a }` / `export { a as b }` from this module, or
+// `export { a } from './mod'` to re-export from another module.
+type ExportNamed struct {
+	From  string // module being re-exported from; "" for same-module exports
+	Names []ExportName
+}
+
+// ExportName names one export: Local is the local binding (”), or the
+// source name when re-exporting; Exported is the name seen by importers (the
+// same as Local when they are equal).
+type ExportName struct {
+	Local    string
+	Exported string
+}
+
+// ExportValue is a named declaration: `export const|let|var X = e`,
+// `export function f`, or `export class C`.
+type ExportValue struct {
+	Kind string // "const" | "let" | "var" | "function" | "class"
+	Name string
+	X    Expr
+	Fn   *FuncDecl
+	Cls  *ClassDecl
+}
+
+// DynamicImport is a dynamic `import('spec')` expression.
+type DynamicImport struct{ X Expr }
 
 // ---- node markers ----
 
@@ -313,6 +364,18 @@ func (*ForOfStmt) node()    {}
 func (*SwitchStmt) node()   {}
 func (*TryStmt) node()      {}
 func (*ThrowStmt) node()    {}
+
+func (*ImportDecl) node()    {}
+func (*ExportDefault) node() {}
+func (*ExportNamed) node()   {}
+func (*ExportValue) node()   {}
+func (*ImportDecl) stmt()    {}
+func (*ExportDefault) stmt() {}
+func (*ExportNamed) stmt()   {}
+func (*ExportValue) stmt()   {}
+
+func (*DynamicImport) node() {}
+func (*DynamicImport) expr() {}
 
 func (*NumberLit) expr()     {}
 func (*StringLit) expr()     {}

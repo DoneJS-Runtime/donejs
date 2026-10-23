@@ -88,6 +88,13 @@ func (g *jsGenerator) Get(name string) Value {
 	case "next":
 		return BuiltinFn("next", func(a []Value) Value {
 			res, _ := g.next(a)
+			if g.cp.Async {
+				// An async generator settles its { value, done } through a
+				// promise so `await it.next()` and `for await` see it.
+				p, resolve, _ := g.vm.NewPromise()
+				resolve(res)
+				return PromiseVal(p)
+			}
 			return res
 		})
 	case "return":

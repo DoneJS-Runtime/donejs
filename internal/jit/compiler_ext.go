@@ -7,6 +7,10 @@ package jit
 // ---- for-of / for-in ----
 
 func (c *Compiler) forOf(n *ForOfStmt) {
+	if n.Async {
+		c.forOfAsync(n)
+		return
+	}
 	c.pushScope()
 	iterSlot := c.allocLocal("")
 	c.allocLocal("") // index
@@ -21,6 +25,58 @@ func (c *Compiler) forOf(n *ForOfStmt) {
 	c.emit(OpIterNext, iterSlot, int32(loop+2))
 	jend := c.emit(OpJump, -1, 0)
 	c.loops = append(c.loops, loopCtx{start: loop})
+	switch t := n.Left.(type) {
+	case *VarDecl:
+		if len(t.Patterns) > 0 && t.Patterns[0] != nil {
+			c.destructure(t.Patterns[0])
+		} else {
+			slot := c.allocLocal(t.Names[0])
+			c.emit(OpStoreLocal, slot, 0)
+		}
+	case *ExprStmt:
+		if id, ok := t.X.(*Ident); ok {
+			c.storeIdent(id.Name)
+		}
+	}
+	c.stmt(n.Body)
+	lc := c.loops[len(c.loops)-1]
+	c.loops = c.loops[:len(c.loops)-1]
+	for _, p := range lc.continuePatches {
+		c.patch(p, loop)
+	}
+	c.emit(OpJump, int32(loop), 0)
+	c.patch(jend, len(c.cur.Code))
+	for _, p := range lc.breakPatches {
+		c.patch(p, len(c.cur.Code))
+	}
+	c.popScope()
+}
+
+// forOfAsync compiles `for await (const x of expr) body`. The iterator comes
+// from the well-known Symbol.iterator key; each iteration awaits the
+// iterator's `next()` result and reads its `{ value, done }` fields, so the
+// loop body runs after the microtask that settles each promise.
+func (c *Compiler) forOfAsync(n *ForOfStmt) {
+	c.pushScope()
+	iterSlot := c.allocLocal("")
+	c.allocLocal("") // index
+	c.allocLocal("") // of-flag
+	c.expr(n.Right)
+	c.emit(OpGetField, c.constIndex(Str(symIteratorKey)), 0)
+	c.emit(OpCallMethod, c.constIndex(Str(symIteratorKey+"\x00"+calleeDesc(n.Right)+"."+symIteratorKey)), 0)
+	c.emit(OpAwait, 0, 0)
+	c.storeVar(iterSlot)
+	loop := len(c.cur.Code)
+	c.loops = append(c.loops, loopCtx{start: loop})
+	c.loadVar(iterSlot)
+	c.emit(OpCallMethod, c.constIndex(Str("next\x00it.next")), 0)
+	c.emit(OpAwait, 0, 0)
+	c.emit(OpDup, 0, 0)
+	c.emit(OpGetField, c.constIndex(Str("done")), 0)
+	jend := c.emit(OpJumpIfFalse, -1, 0)
+	c.emit(OpPop, 0, 0)
+	c.emit(OpGetField, c.constIndex(Str("value")), 0)
+	c.emit(OpPop, 0, 0)
 	switch t := n.Left.(type) {
 	case *VarDecl:
 		if len(t.Patterns) > 0 && t.Patterns[0] != nil {

@@ -27,6 +27,13 @@ type Compiler struct {
 	superSlot int32  // slot holding the superclass value (-1 when unused)
 	curClass  *Class // enclosing class, for `super`
 
+	// esNamespace is the module namespace object an ES module body writes its
+	// exports into, or nil outside ES module compilation.
+	esNamespace *Obj
+	// esExport is the property name a declaration being compiled exports into
+	// the module namespace, or "" when it is not an export.
+	esExport string
+
 	// outerFns holds the scope chain and prototype of each enclosing
 	// function, inner last, so a nested function can capture one of their
 	// locals as an upvalue. The scopes are the ones live when that child
@@ -373,6 +380,8 @@ func (c *Compiler) stmt(s Stmt) {
 			c.storeVar(slot)
 		}
 	case *FuncDecl:
+		expName := c.esExport
+		c.esExport = ""
 		idx := c.addFunc(&n.Fn)
 		c.emit(OpMakeClosure, idx, 0)
 		if n.Fn.Name != "" {
@@ -381,8 +390,107 @@ func (c *Compiler) stmt(s Stmt) {
 				slot = c.allocLocal(n.Fn.Name)
 			}
 			c.storeVar(slot)
+			if expName != "" {
+				c.exportStore(expName, slot)
+			}
+		} else if expName != "" && c.esNamespace != nil {
+			tmp := c.allocLocal("__esDefault")
+			c.storeVar(tmp)
+			c.exportStore(expName, tmp)
 		} else {
 			c.emit(OpPop, 0, 0)
+		}
+		c.esExport = expName
+	case *ImportDecl:
+		for _, s := range n.Specifiers {
+			slot, ok := c.resolve(s.Local)
+			if !ok {
+				slot = c.allocLocal(s.Local)
+			}
+			prop := s.Imported
+			if s.IsNamespace {
+				prop = ""
+			}
+			if s.IsDefault {
+				prop = "default"
+			}
+			c.emit(OpLoadGlobal, c.constIndex(Str("__donejsImport")), 0)
+			c.emit(OpConst, c.constIndex(Str(n.Module)), 0)
+			c.emit(OpConst, c.constIndex(Str(prop)), 0)
+			c.emit(OpCall, c.constIndex(Str("import")), 2)
+			c.storeVar(slot)
+		}
+		if len(n.Specifiers) == 0 && n.Module != "" {
+			c.emit(OpLoadGlobal, c.constIndex(Str("__donejsImport")), 0)
+			c.emit(OpConst, c.constIndex(Str(n.Module)), 0)
+			c.emit(OpConst, c.constIndex(Str("")), 0)
+			c.emit(OpCall, c.constIndex(Str("import")), 2)
+			c.emit(OpPop, 0, 0)
+		}
+	case *ExportDefault:
+		c.expr(n.X)
+		if c.esNamespace != nil {
+			tmp := c.allocLocal("__esDefault")
+			c.storeVar(tmp)
+			c.exportStore("default", tmp)
+		} else {
+			c.emit(OpPop, 0, 0)
+		}
+	case *ExportNamed:
+		for _, en := range n.Names {
+			src := en.Local
+			if src == "" {
+				src = en.Exported
+			}
+			if n.From != "" {
+				c.emit(OpLoadGlobal, c.constIndex(Str("__donejsImport")), 0)
+				c.emit(OpConst, c.constIndex(Str(n.From)), 0)
+				c.emit(OpConst, c.constIndex(Str(src)), 0)
+				c.emit(OpCall, c.constIndex(Str("import")), 2)
+			} else {
+				slot, ok := c.resolve(src)
+				if !ok {
+					slot = c.allocLocal(src)
+				}
+				c.emit(OpConst, c.constIndex(ObjVal(c.esNamespace)), 0)
+				c.emit(OpConst, c.constIndex(Str(en.Exported)), 0)
+				c.loadVar(slot)
+				c.emit(OpSetIndex, 0, 0)
+				continue
+			}
+			c.emit(OpConst, c.constIndex(ObjVal(c.esNamespace)), 0)
+			c.emit(OpConst, c.constIndex(Str(en.Exported)), 0)
+			c.emit(OpSetIndex, 0, 0)
+		}
+	case *ExportValue:
+		switch n.Kind {
+		case "const", "let", "var":
+			c.esExport = n.Name
+			c.stmt(&VarDecl{Names: []string{n.Name}, Inits: []Expr{n.X}})
+			c.esExport = ""
+			if c.esNamespace != nil {
+				if slot, ok := c.resolve(n.Name); ok {
+					c.exportStore(n.Name, slot)
+				}
+			}
+		case "function":
+			c.esExport = n.Name
+			c.stmt(n.Fn)
+			c.esExport = ""
+		case "class":
+			c.esExport = n.Name
+			c.stmt(n.Cls)
+			c.esExport = ""
+		}
+	case *ClassDecl:
+		expName := c.esExport
+		c.esExport = ""
+		c.classDecl(n)
+		c.esExport = expName
+		if expName != "" && c.esNamespace != nil {
+			if slot, ok := c.resolve(expName); ok {
+				c.exportStore(expName, slot)
+			}
 		}
 	case *IfStmt:
 		c.expr(n.Cond)
@@ -516,9 +624,18 @@ func (c *Compiler) stmt(s Stmt) {
 	case *ThrowStmt:
 		c.expr(n.Value)
 		c.emit(OpThrow, 0, 0)
-	case *ClassDecl:
-		c.classDecl(n)
 	}
+}
+
+// exportStore writes the value of slot into the module namespace under name.
+func (c *Compiler) exportStore(name string, slot int32) {
+	if c.esNamespace == nil {
+		return
+	}
+	c.emit(OpConst, c.constIndex(ObjVal(c.esNamespace)), 0)
+	c.emit(OpConst, c.constIndex(Str(name)), 0)
+	c.loadVar(slot)
+	c.emit(OpSetIndex, 0, 0)
 }
 
 // calleeDesc renders a callee expression for TypeError messages: "o.x",
@@ -665,6 +782,10 @@ func (c *Compiler) expr(e Expr) {
 		c.patch(jf, len(c.cur.Code))
 		c.expr(n.Else)
 		c.patch(jend, len(c.cur.Code))
+	case *DynamicImport:
+		c.emit(OpLoadGlobal, c.constIndex(Str("__donejsImportDyn")), 0)
+		c.expr(n.X)
+		c.emit(OpCall, c.constIndex(Str("import")), 1)
 	case *CallExpr:
 		if id, ok := n.Callee.(*Ident); ok && id.Name == "super" && c.curClass != nil {
 			c.expr(&ThisExpr{})

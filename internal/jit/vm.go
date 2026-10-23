@@ -86,6 +86,9 @@ type VM struct {
 	// numberProto is the object number primitives inherit from, so methods
 	// installed on Number.prototype answer `(1).toFixed(2)`-style calls.
 	numberProto *Obj
+	// objectProto backs plain objects and the Object constructor: the home of
+	// Object.prototype methods like hasOwnProperty and propertyIsEnumerable.
+	objectProto *Obj
 	// gen is the generator currently being driven by a next()/return()/throw;
 	// its suspended activation lives in gen.frame.
 	gen *jsGenerator
@@ -107,6 +110,7 @@ func NewVM() *VM {
 		globals: map[string]Value{},
 		out:     func(s string) { fmt.Println(s) },
 	}
+	vm.objectProto = NewObj()
 	vm.installGlobals()
 	vm.installPrim()
 	vm.installBigInt()
@@ -257,6 +261,9 @@ type builtin struct {
 	fn    func([]Value) Value
 	name  string
 	props map[string]Value
+	// recvFirst marks a prototype method whose first argument is the receiver,
+	// so `obj.m(x)` and `m.call(obj, x)` both read as fn(obj, x).
+	recvFirst bool
 }
 
 // New makes a host function constructable, so `new X(...)` works for the
@@ -657,6 +664,7 @@ func (vm *VM) loop() (Value, error) {
 		case OpMakeObject:
 			n := int(in.A)
 			o := NewObj()
+			o.proto = vm.objectProto
 			// The key/value pairs sit on the stack in source order; pop them
 			// into a buffer and replay forwards so insertion order is kept.
 			pairs := make([]Value, 2*n)
@@ -668,7 +676,9 @@ func (vm *VM) loop() (Value, error) {
 			}
 			st.push(ObjVal(o))
 		case OpNewObject:
-			st.push(ObjVal(NewObj()))
+			o := NewObj()
+			o.proto = vm.objectProto
+			st.push(ObjVal(o))
 		case OpObjSet:
 			v := st.pop()
 			if o := st.s[st.sp-1].AsObj(); o != nil {
@@ -927,6 +937,11 @@ func (vm *VM) loop() (Value, error) {
 			if cls != nil {
 				if len(cls.Methods) > 0 || cls.Ctor.AsFunc() != nil {
 					cls = cls.bind(f)
+					// A class instance reaches Object.prototype through its own
+					// prototype unless it extends something else.
+					if cls.Proto != nil && cls.Proto.proto == nil {
+						cls.Proto.proto = vm.objectProto
+					}
 				}
 				if s := sup.AsClass(); s != nil {
 					cls.Super = s
@@ -1282,6 +1297,15 @@ func (vm *VM) callMethodValue(obj Value, name, desc string, args []Value) (Value
 				res, pushed := vm.startCall(cp, cl, len(args), obj, args, o.class)
 				return res, pushed, nil
 			}
+			if b := m.AsBuiltin(); b != nil && b.recvFirst {
+				// A prototype method takes the receiver first, so
+				// `obj.hasOwnProperty(key)` reads as fn(obj, key).
+				all := make([]Value, 0, len(args)+1)
+				all = append(all, obj)
+				all = append(all, args...)
+				r, te := vm.callBuiltin(Value{tag: tFunc, ref: b}, all)
+				return r, false, te
+			}
 			r, te := vm.callBuiltin(m, args)
 			return r, false, te
 		}
@@ -1324,14 +1348,30 @@ func (vm *VM) callMethodValue(obj Value, name, desc string, args []Value) (Value
 					argVals = arr.elems
 				}
 			}
+			if b.recvFirst {
+				all := make([]Value, 0, len(argVals)+1)
+				if len(args) > 0 {
+					all = append(all, args[0])
+				}
+				all = append(all, argVals...)
+				v, te := tryHost(func() Value { return b.fn(all) })
+				return v, false, te
+			}
 			v, te := tryHost(func() Value { return b.fn(argVals) })
 			return v, false, te
 		case "call":
 			argVals := []Value{}
 			if len(args) > 1 {
-				if arr := args[1].AsArr(); arr != nil {
-					argVals = arr.elems
+				argVals = args[1:]
+			}
+			if b.recvFirst {
+				all := make([]Value, 0, len(argVals)+1)
+				if len(args) > 0 {
+					all = append(all, args[0])
 				}
+				all = append(all, argVals...)
+				v, te := tryHost(func() Value { return b.fn(all) })
+				return v, false, te
 			}
 			v, te := tryHost(func() Value { return b.fn(argVals) })
 			return v, false, te
@@ -1493,6 +1533,12 @@ func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 		if ob := o.AsObj(); ob != nil {
 			// An accessor is invoked with the receiver as `this`, matching a
 			// plain method call, so a getter can read sibling properties.
+			if name == "__proto__" {
+				if ob.proto == nil {
+					return Null(), nil
+				}
+				return ObjVal(ob.proto), nil
+			}
 			if a := ob.accessorFor(name); a != nil && !a.get.IsUndef() {
 				return vm.invokeMethod(a.get, ObjVal(ob), nil)
 			}
@@ -1539,6 +1585,10 @@ func (vm *VM) setField(o Value, name string, v Value) *ThrowError {
 	if o.tag == tObj {
 		if ob := o.AsObj(); ob != nil {
 			if ob.kind != kindNone && typedSetIndex(ob, Str(name), v) {
+				return nil
+			}
+			if name == "__proto__" {
+				ob.proto = v.AsObj()
 				return nil
 			}
 			if a := ob.accessorFor(name); a != nil && !a.set.IsUndef() {

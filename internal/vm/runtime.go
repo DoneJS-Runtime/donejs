@@ -52,6 +52,13 @@ type Runtime struct {
 	modCache  map[string]*jsModule
 	progCache map[string]*jit.FuncProto
 
+	// esModules holds ES module namespaces keyed by resolved file path.
+	esModules map[string]*esModule
+	// esStack holds the ES modules currently being evaluated, for cycles.
+	esStack []*esModule
+	// currentModDir is the directory an ES `import` specifier resolves from.
+	currentModDir string
+
 	fds   map[int]*os.File
 	fdSeq int
 
@@ -90,6 +97,7 @@ func New(opts Options) *Runtime {
 		cbs:       map[uint64]jit.Value{},
 		modCache:  map[string]*jsModule{},
 		progCache: map[string]*jit.FuncProto{},
+		esModules: map[string]*esModule{},
 		fds:       map[int]*os.File{},
 		natives:   map[string]jit.Value{},
 		allowExec: opts.AllowExec || os.Getenv("DONEJS_ALLOW_EXEC") == "1",
@@ -116,6 +124,8 @@ func New(opts Options) *Runtime {
 	rt.argv = append(rt.argv, opts.Args...)
 
 	rt.registerNatives()
+	rt.jit.SetGlobal("__donejsImport", rt.importHost())
+	rt.jit.SetGlobal("__donejsImportDyn", rt.dynamicImportHost())
 	rt.bootstrapGlobals()
 	return rt
 }
@@ -137,8 +147,14 @@ func Run(opts Options) (int, error) {
 		}
 		rt.mainFile = abs
 		rt.mainDir = filepath.Dir(abs)
-		if _, err := rt.loadModule(abs, true); err != nil {
-			return failCode(rt.currentExit()), err
+		var loadErr error
+		if data, err := os.ReadFile(abs); err == nil && hasESModuleSyntax(string(data)) {
+			_, loadErr = rt.loadESModule(abs)
+		} else {
+			_, loadErr = rt.loadModule(abs, true)
+		}
+		if loadErr != nil {
+			return failCode(rt.currentExit()), loadErr
 		}
 	}
 	return rt.Loop(), nil

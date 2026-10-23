@@ -146,11 +146,11 @@ func (vm *VM) objectCtor() Value {
 		if o == nil {
 			return ArrVal(NewArr(0))
 		}
-		out := NewArr(len(o.props))
-		i := 0
+		out := NewArr(0)
 		for _, k := range o.keys() {
-			out.elems[i] = Str(k)
-			i++
+			if o.pflag(k).enumerable {
+				out.elems = append(out.elems, Str(k))
+			}
 		}
 		return ArrVal(out)
 	})
@@ -165,18 +165,79 @@ func (vm *VM) objectCtor() Value {
 		for _, src := range a[1:] {
 			if so := src.AsObj(); so != nil {
 				for _, k := range so.keys() {
-					dst.set(k, so.props[k])
+					if so.pflag(k).enumerable {
+						dst.set(k, so.props[k])
+					}
 				}
 			}
 		}
 		return a[0]
 	})
-	def("freeze", func(a []Value) Value { return a[0] })
-	def("seal", func(a []Value) Value { return a[0] })
-	def("preventExtensions", func(a []Value) Value { return a[0] })
-	def("isFrozen", func(a []Value) Value { return Bool(false) })
-	def("isSealed", func(a []Value) Value { return Bool(false) })
-	def("isExtensible", func(a []Value) Value { return Bool(true) })
+	def("freeze", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return a[0]
+		}
+		o.extensible = false
+		for k := range o.props {
+			o.setf(k, propFlags{enumerable: true, writable: false, configurable: false})
+		}
+		return a[0]
+	})
+	def("seal", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return a[0]
+		}
+		for k := range o.props {
+			o.setf(k, propFlags{enumerable: true, writable: true, configurable: false})
+		}
+		return a[0]
+	})
+	def("preventExtensions", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return a[0]
+		}
+		o.extensible = false
+		return a[0]
+	})
+	def("isFrozen", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return Bool(false)
+		}
+		if o.extensible && len(o.props) > 0 {
+			for k := range o.props {
+				f := o.pflag(k)
+				if f.writable || f.configurable {
+					return Bool(false)
+				}
+			}
+		}
+		return Bool(!o.extensible)
+	})
+	def("isSealed", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return Bool(false)
+		}
+		// A sealed object is still extensible but every own prop is
+		// non-configurable; a frozen object (not extensible) is not sealed.
+		if !o.extensible {
+			return Bool(false)
+		}
+		for k := range o.props {
+			if o.pflag(k).configurable {
+				return Bool(false)
+			}
+		}
+		return Bool(true)
+	})
+	def("isExtensible", func(a []Value) Value {
+		o := a[0].AsObj()
+		return Bool(o != nil && o.extensible)
+	})
 	def("hasOwn", func(a []Value) Value {
 		if len(a) < 2 {
 			return Bool(false)
@@ -228,21 +289,68 @@ func (vm *VM) objectCtor() Value {
 		o := NewObj()
 		if len(a) > 0 {
 			if po := a[0].AsObj(); po != nil {
-				for _, k := range po.keys() {
-					o.set(k, po.props[k])
-				}
+				o.proto = po
 			}
 		}
 		return ObjVal(o)
 	})
-	def("getPrototypeOf", func(a []Value) Value { return Undef() })
-	def("setPrototypeOf", func(a []Value) Value { return a[0] })
+	def("getPrototypeOf", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil || o.proto == nil {
+			return Null()
+		}
+		return ObjVal(o.proto)
+	})
+	def("setPrototypeOf", func(a []Value) Value {
+		if len(a) < 2 {
+			return a[0]
+		}
+		if o := a[0].AsObj(); o != nil {
+			o.proto = a[1].AsObj()
+		}
+		return a[0]
+	})
+	def("isPrototypeOf", func(a []Value) Value {
+		if len(a) < 2 {
+			return Bool(false)
+		}
+		v := a[0].AsObj()
+		s := a[1].AsObj()
+		if v == nil || s == nil {
+			return Bool(false)
+		}
+		for p := s; p != nil; p = p.proto {
+			if p == v {
+				return Bool(true)
+			}
+		}
+		return Bool(false)
+	})
 	def("defineProperty", func(a []Value) Value {
 		if len(a) < 3 {
 			return a[0]
 		}
-		if o := a[0].AsObj(); o != nil {
-			o.set(a[1].toStr(), a[2])
+		o := a[0].AsObj()
+		if o == nil {
+			return a[0]
+		}
+		o.defineProp(a[1].toStr(), a[2])
+		return a[0]
+	})
+	def("defineProperties", func(a []Value) Value {
+		if len(a) < 2 {
+			return a[0]
+		}
+		o := a[0].AsObj()
+		if o == nil {
+			return a[0]
+		}
+		if dv := a[1].AsObj(); dv != nil {
+			for _, k := range dv.keys() {
+				if dv.pflag(k).enumerable {
+					o.defineProp(k, dv.props[k])
+				}
+			}
 		}
 		return a[0]
 	})
@@ -251,11 +359,9 @@ func (vm *VM) objectCtor() Value {
 		if o == nil {
 			return ArrVal(NewArr(0))
 		}
-		out := NewArr(len(o.props))
-		i := 0
+		out := NewArr(0)
 		for _, k := range o.keys() {
-			out.elems[i] = Str(k)
-			i++
+			out.elems = append(out.elems, Str(k))
 		}
 		return ArrVal(out)
 	})
@@ -272,11 +378,41 @@ func (vm *VM) objectCtor() Value {
 			return Undef()
 		}
 		d := NewObj()
+		if acc := o.accessorFor(a[1].toStr()); acc != nil && !acc.get.IsUndef() {
+			d.set("get", acc.get)
+			d.set("set", acc.set)
+			return ObjVal(d)
+		}
 		d.set("value", v)
-		d.set("writable", Bool(true))
-		d.set("enumerable", Bool(true))
-		d.set("configurable", Bool(true))
+		d.set("writable", Bool(o.pflag(a[1].toStr()).writable))
+		d.set("enumerable", Bool(o.pflag(a[1].toStr()).enumerable))
+		d.set("configurable", Bool(o.pflag(a[1].toStr()).configurable))
 		return ObjVal(d)
+	})
+	def("getOwnPropertyDescriptors", func(a []Value) Value {
+		o := a[0].AsObj()
+		if o == nil {
+			return ObjVal(NewObj())
+		}
+		out := NewObj()
+		for _, k := range o.keys() {
+			v, ok := o.props[k]
+			if !ok {
+				continue
+			}
+			d := NewObj()
+			if acc := o.accessorFor(k); acc != nil && !acc.get.IsUndef() {
+				d.set("get", acc.get)
+				d.set("set", acc.set)
+			} else {
+				d.set("value", v)
+				d.set("writable", Bool(o.pflag(k).writable))
+			}
+			d.set("enumerable", Bool(o.pflag(k).enumerable))
+			d.set("configurable", Bool(o.pflag(k).configurable))
+			out.set(k, ObjVal(d))
+		}
+		return ObjVal(out)
 	})
 	def("is", func(a []Value) Value {
 		if len(a) < 2 {
@@ -287,10 +423,48 @@ func (vm *VM) objectCtor() Value {
 	ctor := builtin{name: "Object"}
 	ctor.fn = func(a []Value) Value {
 		if len(a) == 0 {
-			return ObjVal(NewObj())
+			o := NewObj()
+			o.proto = vm.objectProto
+			return ObjVal(o)
 		}
 		return a[0]
 	}
 	ctor.props = keys
+	ctor.props["prototype"] = ObjVal(vm.objectProto)
+	// Object.prototype: the home of the shared instance methods.
+	op := vm.objectProto
+	op.set("constructor", Value{tag: tFunc, ref: &ctor})
+	op.set("toString", MethodFn("toString", func(a []Value) Value { return Str("[object Object]") }))
+	op.set("valueOf", MethodFn("valueOf", func(a []Value) Value { return a[0] }))
+	op.set("hasOwnProperty", MethodFn("hasOwnProperty", func(a []Value) Value {
+		if len(a) < 2 {
+			return Bool(false)
+		}
+		o := a[0].AsObj()
+		return Bool(o != nil && o.hasOwn(a[1].toStr()))
+	}))
+	op.set("propertyIsEnumerable", MethodFn("propertyIsEnumerable", func(a []Value) Value {
+		if len(a) < 2 {
+			return Bool(false)
+		}
+		o := a[0].AsObj()
+		return Bool(o != nil && o.hasOwn(a[1].toStr()) && o.pflag(a[1].toStr()).enumerable)
+	}))
+	op.set("isPrototypeOf", MethodFn("isPrototypeOf", func(a []Value) Value {
+		if len(a) < 2 {
+			return Bool(false)
+		}
+		v := a[0].AsObj()
+		s := a[1].AsObj()
+		if v == nil || s == nil {
+			return Bool(false)
+		}
+		for p := s; p != nil; p = p.proto {
+			if p == v {
+				return Bool(true)
+			}
+		}
+		return Bool(false)
+	}))
 	return Value{tag: tFunc, ref: &ctor}
 }

@@ -151,6 +151,14 @@ func (p *parser) stmt() (Stmt, error) {
 		}
 		return &LabeledStmt{Label: label, Body: body}, nil
 	}
+	if t.kind == tIdent && t.val == "import" && p.peekTok(1).kind == tPunct && p.peekTok(1).val == "(" {
+		// dynamic `import('spec')`: an expression, not a module declaration
+		x, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		return &ExprStmt{X: x}, nil
+	}
 	if t.kind == tIdent {
 		switch t.val {
 		case "var", "let", "const":
@@ -213,6 +221,10 @@ func (p *parser) stmt() (Stmt, error) {
 			return &ThrowStmt{Value: x}, nil
 		case "class":
 			return p.classDecl()
+		case "import":
+			return p.importDecl()
+		case "export":
+			return p.exportDecl()
 		}
 	}
 	x, err := p.expr()
@@ -224,7 +236,7 @@ func (p *parser) stmt() (Stmt, error) {
 }
 
 func (p *parser) varDecl() (Stmt, error) {
-	p.next() // var/let/const
+	kind := p.next().val // var/let/const
 	var names []string
 	var inits []Expr
 	var patterns []Pat
@@ -256,7 +268,7 @@ func (p *parser) varDecl() (Stmt, error) {
 		}
 	}
 	p.accept(";")
-	return &VarDecl{Names: names, Inits: inits, Patterns: patterns}, nil
+	return &VarDecl{Kind: kind, Names: names, Inits: inits, Patterns: patterns}, nil
 }
 
 func (p *parser) funcDecl() (Stmt, error) {
@@ -440,13 +452,15 @@ func (p *parser) doWhileStmt() (Stmt, error) {
 
 func (p *parser) forStmt() (Stmt, error) {
 	p.next()
-	// `for await (x of y)` is an async iteration; the interpreter runs it as
-	// a plain for-of for now (await is a separate feature).
-	p.accept("await")
+	// `for await (x of y)` iterates an async iterator.
+	async := false
+	if p.accept("await") {
+		async = true
+	}
 	if err := p.expect("("); err != nil {
 		return nil, err
 	}
-	if st, ok, err := p.tryForOf(); err != nil {
+	if st, ok, err := p.tryForOf(async); err != nil {
 		return nil, err
 	} else if ok {
 		return st, nil
@@ -494,8 +508,9 @@ func (p *parser) forStmt() (Stmt, error) {
 }
 
 // tryForOf consumes and parses a for-of / for-in loop. It reports whether it
-// matched, restoring the token position on no-match.
-func (p *parser) tryForOf() (Stmt, bool, error) {
+// matched, restoring the token position on no-match. async is set for
+// `for await (x of y)`.
+func (p *parser) tryForOf(async bool) (Stmt, bool, error) {
 	save := p.pos
 	var target Stmt
 	if p.isKeyword("var") || p.isKeyword("let") || p.isKeyword("const") {
@@ -529,7 +544,7 @@ func (p *parser) tryForOf() (Stmt, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	return &ForOfStmt{Left: target, Right: right, Body: body, Of: of}, true, nil
+	return &ForOfStmt{Left: target, Right: right, Body: body, Of: of, Async: async}, true, nil
 }
 
 // parsePattern parses a destructuring pattern: identifier, [a, b], {x, y: z}.
@@ -1102,6 +1117,177 @@ var binaryPrec = map[string]int{
 	"**": 12,
 }
 
+// moduleSpecifier reads `from './mod'`: the `from` keyword then the module
+// specifier string.
+func (p *parser) moduleSpecifier() (string, error) {
+	if err := p.expect("from"); err != nil {
+		return "", err
+	}
+	if p.cur().kind != tString {
+		return "", p.errf("expected module specifier string")
+	}
+	return p.next().val, nil
+}
+
+// importDecl parses `import ... from './mod'`, including bare `import './mod'`.
+func (p *parser) importDecl() (Stmt, error) {
+	p.next() // `import`
+	var module string
+	var specs []ImportSpecifier
+	switch {
+	case p.cur().kind == tString:
+		module = p.next().val
+		p.accept(";")
+		return &ImportDecl{Module: module}, nil
+	case p.at("*"):
+		p.next() // `*`
+		if !p.accept("as") {
+			return nil, p.errf("expected 'as' after *")
+		}
+		if p.cur().kind != tIdent {
+			return nil, p.errf("expected namespace name after *")
+		}
+		ns := p.next().val
+		m, err := p.moduleSpecifier()
+		if err != nil {
+			return nil, err
+		}
+		module = m
+		specs = []ImportSpecifier{{Local: ns, IsNamespace: true}}
+	case p.at("{"):
+		p.next() // `{`
+		for {
+			if p.cur().kind != tIdent {
+				return nil, p.errf("expected imported name")
+			}
+			imp := p.next().val
+			local := imp
+			if p.accept("as") {
+				if p.cur().kind != tIdent {
+					return nil, p.errf("expected local name after as")
+				}
+				local = p.next().val
+			}
+			specs = append(specs, ImportSpecifier{Imported: imp, Local: local})
+			if !p.accept(",") {
+				break
+			}
+		}
+		if err := p.expect("}"); err != nil {
+			return nil, err
+		}
+		m, err := p.moduleSpecifier()
+		if err != nil {
+			return nil, err
+		}
+		module = m
+	case p.cur().kind == tIdent:
+		local := p.next().val
+		m, err := p.moduleSpecifier()
+		if err != nil {
+			return nil, err
+		}
+		module = m
+		specs = []ImportSpecifier{{Local: local, IsDefault: true}}
+	default:
+		return nil, p.errf("expected module specifier after import")
+	}
+	return &ImportDecl{Module: module, Specifiers: specs}, nil
+}
+
+// exportDecl parses every supported `export` form.
+func (p *parser) exportDecl() (Stmt, error) {
+	p.next() // `export`
+	switch {
+	case p.at("default"):
+		p.next()
+		if p.cur().kind == tIdent && p.cur().val == "function" {
+			fd, err := p.funcDecl()
+			if err != nil {
+				return nil, err
+			}
+			// `export default function dbl` exports under the name "default".
+			return &ExportValue{Kind: "function", Name: "default", Fn: fd.(*FuncDecl)}, nil
+		}
+		if p.cur().kind == tIdent && p.cur().val == "class" {
+			cd, err := p.classDecl()
+			if err != nil {
+				return nil, err
+			}
+			// `export default class` exports under the name "default".
+			return &ExportValue{Kind: "class", Name: "default", Cls: cd.(*ClassDecl)}, nil
+		}
+		x, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		p.accept(";")
+		return &ExportDefault{X: x}, nil
+	case p.at("{"):
+		p.next() // `{`
+		var names []ExportName
+		for {
+			if p.cur().kind != tIdent {
+				return nil, p.errf("expected exported name")
+			}
+			local := p.next().val
+			exp := local
+			if p.accept("as") {
+				if p.cur().kind != tIdent {
+					return nil, p.errf("expected exported name after as")
+				}
+				exp = p.next().val
+			}
+			names = append(names, ExportName{Local: local, Exported: exp})
+			if !p.accept(",") {
+				break
+			}
+		}
+		if err := p.expect("}"); err != nil {
+			return nil, err
+		}
+		from := ""
+		if p.cur().kind == tIdent && p.cur().val == "from" {
+			m, err := p.moduleSpecifier()
+			if err != nil {
+				return nil, err
+			}
+			from = m
+		}
+		p.accept(";")
+		return &ExportNamed{From: from, Names: names}, nil
+	case p.cur().kind == tIdent && p.cur().val == "function":
+		fd, err := p.funcDecl()
+		if err != nil {
+			return nil, err
+		}
+		f := fd.(*FuncDecl)
+		return &ExportValue{Kind: "function", Name: f.Fn.Name, Fn: f}, nil
+	case p.cur().kind == tIdent && p.cur().val == "class":
+		cd, err := p.classDecl()
+		if err != nil {
+			return nil, err
+		}
+		c := cd.(*ClassDecl)
+		return &ExportValue{Kind: "class", Name: c.Name, Cls: c}, nil
+	case p.cur().kind == tIdent && (p.cur().val == "const" || p.cur().val == "let" || p.cur().val == "var"):
+		vd, err := p.varDecl()
+		if err != nil {
+			return nil, err
+		}
+		v := vd.(*VarDecl)
+		if len(v.Names) == 0 || v.Names[0] == "" {
+			return nil, p.errf("expected name in exported declaration")
+		}
+		var init Expr
+		if len(v.Inits) > 0 {
+			init = v.Inits[0]
+		}
+		return &ExportValue{Kind: v.Kind, Name: v.Names[0], X: init}, nil
+	}
+	return nil, p.errf("unsupported export declaration")
+}
+
 func (p *parser) expr() (Expr, error) { return p.assign() }
 
 func (p *parser) assign() (Expr, error) {
@@ -1368,6 +1554,19 @@ func (p *parser) primary() (Expr, error) {
 			return &UndefLit{}, nil
 		case "this":
 			return &ThisExpr{}, nil
+		case "import":
+			if p.at("(") {
+				p.next() // (
+				src, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expect(")"); err != nil {
+					return nil, err
+				}
+				return &DynamicImport{X: src}, nil
+			}
+			return nil, p.errf("dynamic import requires a module specifier")
 		case "function":
 			async := p.pendingAsync
 			p.pendingAsync = false

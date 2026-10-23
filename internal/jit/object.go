@@ -30,6 +30,12 @@ type Obj struct {
 	// back is the owning ArrayBuffer of a view, created on first `.buffer`
 	// read and shared from then on.
 	back *Obj
+	// extensible records whether new own properties may still be added; it is
+	// what Object.freeze / Object.preventExtensions manage.
+	extensible bool
+	// pflags tracks per-property flags; nil means every property is
+	// enumerable/writable/configurable.
+	pflags map[string]propFlags
 }
 
 // window returns the view's byte window over its backing array.
@@ -59,7 +65,56 @@ type Accessor struct {
 	set Value
 }
 
-func NewObj() *Obj { return &Obj{props: make(map[string]Value, 8)} }
+// propFlags is the enumerable/writable/configurable state of one own property.
+type propFlags struct {
+	enumerable   bool
+	writable     bool
+	configurable bool
+}
+
+func (o *Obj) pflag(name string) propFlags {
+	if f, ok := o.pflags[name]; ok {
+		return f
+	}
+	return propFlags{enumerable: true, writable: true, configurable: true}
+}
+
+// setf records the property flags Object.freeze / seal need.
+func (o *Obj) setf(name string, f propFlags) {
+	if o.pflags == nil {
+		o.pflags = map[string]propFlags{}
+	}
+	o.pflags[name] = f
+}
+
+func NewObj() *Obj { return &Obj{props: make(map[string]Value, 8), extensible: true} }
+
+// hasOwn reports whether name is an own property of o.
+func (o *Obj) hasOwn(name string) bool {
+	_, ok := o.props[name]
+	return ok
+}
+
+// defineProp installs one property on o, as a data or an accessor property.
+func (o *Obj) defineProp(name string, dv Value) {
+	if o == nil {
+		return
+	}
+	if get := dv.Get("get"); !get.IsUndef() {
+		o.setAccessor(name, dv.Get("set").IsUndef(), get)
+		return
+	}
+	if set := dv.Get("set"); !set.IsUndef() {
+		o.setAccessor(name, true, set)
+		return
+	}
+	o.set(name, dv.Get("value"))
+	o.setf(name, propFlags{
+		enumerable:   dv.Get("enumerable").truthy(),
+		writable:     dv.Get("writable").truthy(),
+		configurable: dv.Get("configurable").truthy(),
+	})
+}
 
 // setAccessor records a getter or setter for name on this object.
 func (o *Obj) setAccessor(name string, isSetter bool, fn Value) {
@@ -122,6 +177,14 @@ func (o *Obj) set(name string, v Value) {
 		o.order = append(o.order, name)
 	}
 	o.props[name] = v
+}
+
+// GetOwn returns the own property value and whether it is defined. Exposed for
+// hosts (like the module loader) that need to read the exports of a module
+// namespace object directly.
+func (o *Obj) GetOwn(name string) (Value, bool) {
+	v, ok := o.props[name]
+	return v, ok
 }
 
 // del removes a property, keeping the insertion order consistent.

@@ -11,6 +11,12 @@ func BuiltinFn(name string, fn func(args []Value) Value) Value {
 	return builtinFn(name, fn)
 }
 
+// MethodFn wraps a Go function as a prototype method: the receiver is passed
+// as the first argument, both for `obj.m(...)` and `m.call(obj, ...)`.
+func MethodFn(name string, fn func(args []Value) Value) Value {
+	return methodFn(name, fn)
+}
+
 // Err builds a *ThrowError for the given error class, ready to panic with.
 func Err(kind, msg string) *ThrowError { return &ThrowError{Value: ErrObj(kind, msg)} }
 
@@ -62,6 +68,19 @@ func Compile(name, src string) (*FuncProto, error) {
 		return nil, err
 	}
 	return NewCompiler().Compile(pr), nil
+}
+
+// CompileES compiles source as an ES module body, wiring exports into the
+// namespace object ns. The source is the body of the module wrapper, so
+// import/export statements compile to namespace reads and writes.
+func CompileES(name, src string, ns *Obj) (*FuncProto, error) {
+	pr, err := Parse(src)
+	if err != nil {
+		return nil, err
+	}
+	c := NewCompiler()
+	c.esNamespace = ns
+	return c.Compile(pr), nil
 }
 
 // CallProtoErr runs a compiled prototype to completion with the given

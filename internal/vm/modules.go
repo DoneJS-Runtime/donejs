@@ -190,20 +190,7 @@ func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (jit.Va
 	rt.modStack = append(rt.modStack, moduleObj)
 	defer func() { rt.modStack = rt.modStack[:len(rt.modStack)-1] }()
 
-	reqFn := func(args []jit.Value) jit.Value {
-		if len(args) == 0 {
-			panic(jit.Err("TypeError", "require specifier required"))
-		}
-		v, err := rt.requireFrom(dir, argsAt(args, 0).String())
-		if err != nil {
-			panic(rt.jsThrow(err))
-		}
-		return v
-	}
-	reqVal := jit.Host(&hostFunc{name: "require", call: reqFn})
-	rt.jit.SetGlobal("__donejsRequire", reqVal)
-	moduleObj.Set("require", reqVal)
-	reqVal.Set("main", rt.mainModule)
+	reqVal := rt.requireHost(dir, moduleObj)
 
 	fn, err := rt.runModuleFn(prg)
 	if err != nil {
@@ -266,4 +253,204 @@ func (rt *Runtime) runBuiltin(name string) (jit.Value, error) {
 func isBuiltin(name string) bool {
 	_, ok := builtinNames()[name]
 	return ok
+}
+
+// requireHost builds the `require` function bound to one module directory.
+func (rt *Runtime) requireHost(dir string, moduleObj jit.Value) jit.Value {
+	reqFn := func(args []jit.Value) jit.Value {
+		if len(args) == 0 {
+			panic(jit.Err("TypeError", "require specifier required"))
+		}
+		v, err := rt.requireFrom(dir, argsAt(args, 0).String())
+		if err != nil {
+			panic(rt.jsThrow(err))
+		}
+		return v
+	}
+	reqVal := jit.Host(&hostFunc{name: "require", call: reqFn})
+	rt.jit.SetGlobal("__donejsRequire", reqVal)
+	moduleObj.Set("require", reqVal)
+	reqVal.Set("main", rt.mainModule)
+	return reqVal
+}
+
+// ---- ES modules ----
+
+// esModule is one evaluated ES module: the namespace object its exports are
+// written into, and whether evaluation finished.
+type esModule struct {
+	exports *jit.Obj
+	ready   bool
+}
+
+// hasESModuleSyntax reports whether src has a top-level `import` or `export`
+// keyword, which selects ES module evaluation over CommonJS.
+func hasESModuleSyntax(src string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "/*") {
+			continue
+		}
+		for _, kw := range []string{"import", "export"} {
+			if !strings.HasPrefix(t, kw) {
+				continue
+			}
+			// The keyword must not be a prefix of a longer identifier.
+			if len(t) == len(kw) || !isIdentByte(t[len(kw)]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isIdentByte reports whether b can continue a JavaScript identifier.
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// loadESModule evaluates an ES module and returns its namespace. The namespace
+// object is created up front, so an `import` from a module under evaluation
+// still resolves to a live object.
+func (rt *Runtime) loadESModule(path string) (*esModule, error) {
+	rt.mu.Lock()
+	if m, ok := rt.esModules[path]; ok {
+		rt.mu.Unlock()
+		return m, nil
+	}
+	m := &esModule{exports: jit.NewObj()}
+	rt.esModules[path] = m
+	rt.mu.Unlock()
+
+	rt.mu.Lock()
+	rt.esStack = append(rt.esStack, m)
+	rt.mu.Unlock()
+	defer func() {
+		rt.mu.Lock()
+		rt.esStack = rt.esStack[:len(rt.esStack)-1]
+		m.ready = true
+		rt.mu.Unlock()
+	}()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(path)
+	rt.currentModDir = dir
+	wrapped := "(function (exports, require, module, __filename, __dirname) {" + string(data) + "\n})"
+	prg, err := jit.CompileES(path, wrapped, m.exports)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	moduleObj := jit.Object()
+	moduleObj.Set("exports", jit.ObjVal(m.exports))
+	moduleObj.Set("id", path)
+	moduleObj.Set("filename", path)
+	moduleObj.Set("loaded", jit.Bool(false))
+
+	reqVal := rt.requireHost(dir, moduleObj)
+
+	fn, err := rt.runModuleFn(prg)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := rt.jit.CallBind(fn, jit.ObjVal(jit.NewObj()), jit.ObjVal(m.exports), reqVal, moduleObj, jit.Str(path), jit.Str(dir)); err != nil {
+		return nil, err
+	}
+	moduleObj.Set("loaded", jit.Bool(true))
+	return m, nil
+}
+
+// importFrom resolves an ES `import` specifier and returns the named export, or
+// the whole namespace when prop is "".
+func (rt *Runtime) importFrom(dir, spec, prop string) (jit.Value, error) {
+	spec = nodePrefix(spec)
+	if n, ok := rt.natives[spec]; ok {
+		return n, nil
+	}
+	if isBuiltin(spec) {
+		return rt.runBuiltin(spec)
+	}
+	path := ""
+	if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") || filepath.IsAbs(spec) {
+		p := spec
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, spec)
+		}
+		if resolved, ok := rt.resolveFile(p); ok {
+			path = resolved
+		}
+	} else {
+		d := dir
+		for {
+			if resolved, ok := rt.resolveNodeModules(filepath.Join(d, "node_modules"), spec); ok {
+				path = resolved
+				break
+			}
+			parent := filepath.Dir(d)
+			if parent == d {
+				break
+			}
+			d = parent
+		}
+	}
+	if path == "" {
+		return jit.Undef(), fmt.Errorf("Cannot find module '%s'", spec)
+	}
+	m, err := rt.loadESModule(path)
+	if err != nil {
+		return jit.Undef(), err
+	}
+	if prop == "" {
+		return jit.ObjVal(m.exports), nil
+	}
+	v, ok := m.exports.GetOwn(prop)
+	if !ok {
+		return jit.Undef(), fmt.Errorf("Module '%s' has no export '%s'", spec, prop)
+	}
+	return v, nil
+}
+
+// importHost builds the global helper the compiler calls for every import.
+func (rt *Runtime) importHost() jit.Value {
+	return jit.Host(&hostFunc{name: "__donejsImport", call: func(args []jit.Value) jit.Value {
+		spec, prop := "", ""
+		if len(args) > 0 {
+			spec = args[0].String()
+		}
+		if len(args) > 1 {
+			prop = args[1].String()
+		}
+		rt.mu.Lock()
+		dir := rt.currentModDir
+		rt.mu.Unlock()
+		v, err := rt.importFrom(dir, spec, prop)
+		if err != nil {
+			panic(rt.jsThrow(err))
+		}
+		return v
+	}})
+}
+
+// dynamicImportHost builds the global helper behind a dynamic `import('spec')`,
+// which returns a promise for the module namespace.
+func (rt *Runtime) dynamicImportHost() jit.Value {
+	return jit.Host(&hostFunc{name: "__donejsImportDyn", call: func(args []jit.Value) jit.Value {
+		spec := ""
+		if len(args) > 0 {
+			spec = args[0].String()
+		}
+		rt.mu.Lock()
+		dir := rt.currentModDir
+		rt.mu.Unlock()
+		p, resolve, _ := rt.jit.NewPromise()
+		v, err := rt.importFrom(dir, spec, "")
+		if err != nil {
+			resolve(jit.ErrObj("Error", err.Error()))
+			return jit.PromiseVal(p)
+		}
+		resolve(v)
+		return jit.PromiseVal(p)
+	}})
 }

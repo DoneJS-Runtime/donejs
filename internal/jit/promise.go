@@ -433,3 +433,8 @@ func (c *promiseCtor) any(args []Value) Value {
 func builtinFn(name string, fn func([]Value) Value) Value {
 	return Value{tag: tFunc, ref: &builtin{fn: fn, name: name}}
 }
+
+// methodFn builds a builtin whose first argument is the receiver.
+func methodFn(name string, fn func([]Value) Value) Value {
+	return Value{tag: tFunc, ref: &builtin{fn: fn, name: name, recvFirst: true}}
+}

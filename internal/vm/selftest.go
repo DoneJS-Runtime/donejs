@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +51,19 @@ func Selftest(w io.Writer) error {
 		`)
 	})
 
+	check("core: async iteration", func() error {
+		return evalOK(rt, `
+			async function* agen() { yield 1; let v = await Promise.resolve(2); yield v; }
+			async function main() {
+				let out = [];
+				for await (const x of agen()) { out.push(x); }
+				if (out.join(',') !== '1,2') throw new Error('for await got ' + out);
+				globalThis.__asyncAgn = out.join(',');
+			}
+			main();
+		`)
+	})
+
 	check("core: promise ordering", func() error {
 		// Uses the entry-module path so the nextTick queue is flushed at the
 		// end of the synchronous body, like Node.
@@ -78,6 +92,41 @@ func Selftest(w io.Writer) error {
 			if (typeof crypto.createHash !== 'function') throw new Error('crypto');
 			if (typeof os.platform !== 'function') throw new Error('os');
 		`)
+	})
+
+	check("module: esm static import/export", func() error {
+		dir, err := os.MkdirTemp("", "donejs-esm-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		if err := os.WriteFile(filepath.Join(dir, "lib.js"), []byte("export const add = (a, b) => a + b;\nexport function sub(a, b) { return a - b; }\n"), 0644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte("import { add, sub } from './lib.js';\nif (add(2, 3) !== 5) throw new Error('esm named import not a function');\nif (sub(5, 2) !== 3) throw new Error('esm named import wrong value');\nglobalThis.__esmDone = true;\n"), 0644); err != nil {
+			return err
+		}
+		m, err := rt.loadESModule(filepath.Join(dir, "main.js"))
+		if err != nil {
+			return err
+		}
+		if !m.ready {
+			return errors.New("esm module not ready")
+		}
+		lib, err := rt.loadESModule(filepath.Join(dir, "lib.js"))
+		if err != nil {
+			return err
+		}
+		if !lib.ready {
+			return errors.New("esm module not ready")
+		}
+		if v, ok := lib.exports.GetOwn("add"); !ok || v.IsUndef() {
+			return errors.New("esm module did not export add")
+		}
+		if v, ok := lib.exports.GetOwn("sub"); !ok || v.IsUndef() {
+			return errors.New("esm module did not export sub")
+		}
+		return nil
 	})
 
 	check("module: require.resolve and cache", func() error {
