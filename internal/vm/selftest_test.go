@@ -14,7 +14,7 @@ func TestSelftest(t *testing.T) {
 	if err := Selftest(&buf); err != nil {
 		t.Fatalf("selftest failed: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "37/37 checks passed") {
+	if !strings.Contains(buf.String(), "38/38 checks passed") {
 		t.Fatalf("unexpected selftest summary:\n%s", buf.String())
 	}
 }

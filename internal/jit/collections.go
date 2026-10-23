@@ -4,9 +4,8 @@ package jit
 // keep insertion order and key entries by SameValueZero, matching the JS
 // semantics the standard library relies on.
 //
-// ponytail: instances expose no `Symbol.iterator`, so `for...of map` and the
-// spread of a Map/Set are not yet supported; add an iterator protocol on host
-// values when a caller needs it.
+// ponytail: Map/Set have no WeakMap-style subclasses and no `size` accessor on
+// the prototype; add those when a caller needs them.
 
 import (
 	"fmt"
@@ -17,10 +16,10 @@ import (
 type mapPair struct{ key, val Value }
 
 type jsMap struct {
-	vm      *VM
-	pairs   []mapPair
-	index   map[string]int
-	hasNaN  bool
+	vm     *VM
+	pairs  []mapPair
+	index  map[string]int
+	hasNaN bool
 }
 
 type jsSet struct {
@@ -29,8 +28,12 @@ type jsSet struct {
 	member map[string]bool
 }
 
-func (m *jsMap) Call([]Value) Value { return strErr("TypeError", "Map constructor cannot be called without 'new'") }
-func (m *jsSet) Call([]Value) Value { return strErr("TypeError", "Set constructor cannot be called without 'new'") }
+func (m *jsMap) Call([]Value) Value {
+	return strErr("TypeError", "Map constructor cannot be called without 'new'")
+}
+func (m *jsSet) Call([]Value) Value {
+	return strErr("TypeError", "Set constructor cannot be called without 'new'")
+}
 
 // keyID renders a Map/Set key as a string identity token.
 func keyID(v Value) string {
@@ -136,7 +139,7 @@ func (m *jsMap) Get(name string) Value {
 				return Bool(true)
 			}
 			return Bool(false)
-		 })
+		})
 	case "clear":
 		return BuiltinFn("clear", func(a []Value) Value {
 			m.pairs = nil
@@ -163,27 +166,32 @@ func (m *jsMap) Get(name string) Value {
 			return Undef()
 		})
 	case "keys":
-		return BuiltinFn("keys", func(a []Value) Value { return m.iterArray(func(p mapPair) Value { return p.key }) })
+		return BuiltinFn("keys", func(a []Value) Value { return m.iterColl(func(p mapPair) Value { return p.key }) })
 	case "values":
-		return BuiltinFn("values", func(a []Value) Value { return m.iterArray(func(p mapPair) Value { return p.val }) })
+		return BuiltinFn("values", func(a []Value) Value { return m.iterColl(func(p mapPair) Value { return p.val }) })
 	case "entries":
-		return BuiltinFn("entries", func(a []Value) Value {
-			return m.iterArray(func(p mapPair) Value {
-				arr := NewArr(2)
-				arr.elems[0], arr.elems[1] = p.key, p.val
-				return ArrVal(arr)
-			})
-		})
+		return BuiltinFn("entries", func(a []Value) Value { return m.iterColl(mapEntry) })
+	}
+	if name == symIteratorKey {
+		return BuiltinFn("entries", func(a []Value) Value { return m.iterColl(mapEntry) })
 	}
 	return Undef()
 }
 
-func (m *jsMap) iterArray(f func(mapPair) Value) Value {
-	arr := NewArr(len(m.pairs))
-	for i, p := range m.pairs {
-		arr.elems[i] = f(p)
-	}
+func mapEntry(p mapPair) Value {
+	arr := NewArr(2)
+	arr.elems[0], arr.elems[1] = p.key, p.val
 	return ArrVal(arr)
+}
+
+// iterColl is a live iterator over the map's entries, in insertion order.
+func (m *jsMap) iterColl(f func(mapPair) Value) Value {
+	return Host(&iterHost{kind: iterColl, coll: func(i int) (Value, bool) {
+		if i < len(m.pairs) {
+			return f(m.pairs[i]), true
+		}
+		return Undef(), false
+	}})
 }
 
 func (m *jsMap) reindex() {
@@ -264,25 +272,30 @@ func (s *jsSet) Get(name string) Value {
 			return Undef()
 		})
 	case "keys", "values":
-		return BuiltinFn(name, func(a []Value) Value {
-			arr := NewArr(len(s.items))
-			for i, it := range s.items {
-				arr.elems[i] = it
-			}
-			return ArrVal(arr)
-		})
+		return BuiltinFn(name, func(a []Value) Value { return s.iterColl(func(it Value) Value { return it }) })
 	case "entries":
 		return BuiltinFn("entries", func(a []Value) Value {
-			arr := NewArr(len(s.items))
-			for i, it := range s.items {
+			return s.iterColl(func(it Value) Value {
 				pair := NewArr(2)
 				pair.elems[0], pair.elems[1] = it, it
-				arr.elems[i] = ArrVal(pair)
-			}
-			return ArrVal(arr)
+				return ArrVal(pair)
+			})
 		})
 	}
+	if name == symIteratorKey {
+		return BuiltinFn("values", func(a []Value) Value { return s.iterColl(func(it Value) Value { return it }) })
+	}
 	return Undef()
+}
+
+// iterColl is a live iterator over the set's items, in insertion order.
+func (s *jsSet) iterColl(f func(Value) Value) Value {
+	return Host(&iterHost{kind: iterColl, coll: func(i int) (Value, bool) {
+		if i < len(s.items) {
+			return f(s.items[i]), true
+		}
+		return Undef(), false
+	}})
 }
 
 func (s *jsSet) Set(string, Value) {}
@@ -293,7 +306,9 @@ func (s *jsSet) Type() string      { return "object" }
 
 type mapCtor struct{ vm *VM }
 
-func (c *mapCtor) Call([]Value) Value { return strErr("TypeError", "Map constructor cannot be called without 'new'") }
+func (c *mapCtor) Call([]Value) Value {
+	return strErr("TypeError", "Map constructor cannot be called without 'new'")
+}
 func (c *mapCtor) Get(name string) Value {
 	if name == "prototype" {
 		return Host(&mapProto{})
@@ -336,7 +351,9 @@ func (p *mapProto) Type() string      { return "object" }
 
 type setCtor struct{ vm *VM }
 
-func (c *setCtor) Call([]Value) Value { return strErr("TypeError", "Set constructor cannot be called without 'new'") }
+func (c *setCtor) Call([]Value) Value {
+	return strErr("TypeError", "Set constructor cannot be called without 'new'")
+}
 func (c *setCtor) Get(name string) Value {
 	if name == "prototype" {
 		return Host(&setProto{})
@@ -401,6 +418,19 @@ func copyIterable(vm *VM, src Value, fn func(k, v Value)) {
 		case *jsSet:
 			for _, it := range coll.items {
 				fn(it, it)
+			}
+		case *iterHost:
+			for {
+				res := coll.next(nil).AsObj()
+				if res == nil || res.get("done").truthy() {
+					return
+				}
+				v := res.get("value")
+				if pair := v.AsArr(); pair != nil && len(pair.elems) >= 2 {
+					fn(pair.elems[0], pair.elems[1])
+				} else {
+					fn(v, Undef())
+				}
 			}
 		}
 	}

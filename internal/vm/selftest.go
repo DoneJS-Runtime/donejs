@@ -79,6 +79,23 @@ func Selftest(w io.Writer) error {
 		`)
 	})
 
+	check("core: Map and Set iteration", func() error {
+		return evalOK(rt, `
+			const m = new Map([['a', 1], ['b', 2]]);
+			if ([...m].map(e => e.join(':')).join(',') !== 'a:1,b:2') throw new Error('map spread');
+			if ([...m.keys()].join(',') !== 'a,b') throw new Error('map keys');
+			if ([...m.values()].join(',') !== '1,2') throw new Error('map values');
+			let pairs = [];
+			for (const [k, v] of m) pairs.push(k + v);
+			if (pairs.join(',') !== 'a1,b2') throw new Error('map for-of got ' + pairs);
+			const st = new Set([1, 1, 2, 3]);
+			if (st.size !== 3) throw new Error('set size');
+			if ([...st].join(',') !== '1,2,3') throw new Error('set spread');
+			if (Array.from(st).join(',') !== '1,2,3') throw new Error('Array.from(set)');
+			if ([...new Set(m.keys())].join(',') !== 'a,b') throw new Error('set of keys');
+		`)
+	})
+
 	check("core: promise ordering", func() error {
 		// Uses the entry-module path so the nextTick queue is flushed at the
 		// end of the synchronous body, like Node.

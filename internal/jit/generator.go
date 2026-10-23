@@ -8,9 +8,9 @@ package jit
 // The suspended activation is a real frame: it keeps its locals, operand stack
 // and pc, so closures created before a yield survive across it.
 //
-// ponytail: `yield*` delegation lowers to a plain yield, and return(v) /
-// throw(e) do not unwind through nested try/finally. Add those when a caller
-// needs the full protocol.
+// ponytail: return(v) / throw(e) on a generator do not unwind through nested
+// try/finally, and concurrent next() calls on an async generator share one
+// pending result. Add those when a caller needs the full protocol.
 
 // symIteratorKey is the property key the engine uses for Symbol.iterator: the
 // well-known symbol value stringifies as "Symbol(Symbol.iterator)".
@@ -114,18 +114,21 @@ const (
 	iterArr iterKind = iota
 	iterStr
 	iterU8
+	iterColl
 )
 
 // iterHost is a host iterator over a built-in collection's elements. It
 // answers `next()` from an internal cursor and advertises the well-known
 // Symbol.iterator key.
 type iterHost struct {
-	kind iterKind
-	a    *Arr
-	o    *Obj
-	s    string
-	w    []byte
-	i    int
+	kind    iterKind
+	a       *Arr
+	o       *Obj
+	s       string
+	w       []byte
+	coll    func(i int) (Value, bool)
+	stopped bool
+	i       int
 }
 
 func (it *iterHost) Call(args []Value) Value { return Host(it) }
@@ -138,6 +141,7 @@ func (it *iterHost) Get(name string) Value {
 	case "next":
 		return BuiltinFn("next", func(a []Value) Value { return it.next(a) })
 	case "return":
+		it.stopped = true
 		switch it.kind {
 		case iterArr:
 			it.i = len(it.a.elems)
@@ -151,7 +155,7 @@ func (it *iterHost) Get(name string) Value {
 		return iterResult(Undef(), true)
 	}
 	if name == symIteratorKey {
-		return Host(it)
+		return BuiltinFn("[Symbol.iterator]", func(a []Value) Value { return Host(it) })
 	}
 	return Undef()
 }
@@ -159,6 +163,9 @@ func (it *iterHost) Get(name string) Value {
 func (it *iterHost) next(args []Value) Value {
 	var v Value
 	done := true
+	if it.stopped {
+		return iterResult(v, done)
+	}
 	switch it.kind {
 	case iterArr:
 		if it.i < len(it.a.elems) {
@@ -174,6 +181,12 @@ func (it *iterHost) next(args []Value) Value {
 		if it.i < len(it.w) {
 			v, it.i = Num(float64(it.w[it.i])), it.i+1
 			done = false
+		}
+	case iterColl:
+		if it.coll != nil {
+			if cv, ok := it.coll(it.i); ok {
+				v, it.i, done = cv, it.i+1, false
+			}
 		}
 	}
 	return iterResult(v, done)
@@ -330,6 +343,15 @@ func (vm *VM) spreadIterable(src Value, fn func(v Value)) *ThrowError {
 	}
 	gen, ok := iter.AsHost().(*jsGenerator)
 	if !ok {
+		if ih, ok2 := iter.AsHost().(*iterHost); ok2 {
+			for {
+				res := ih.next(nil).AsObj()
+				if res == nil || res.get("done").truthy() {
+					return nil
+				}
+				fn(res.get("value"))
+			}
+		}
 		return &ThrowError{Value: strErr("TypeError", src.toStr()+" is not iterable")}
 	}
 	for {

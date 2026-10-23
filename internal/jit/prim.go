@@ -231,18 +231,26 @@ func (vm *VM) vmArrayCtor() Value {
 		"isArray": BuiltinFn("isArray", func(a []Value) Value { return Bool(a[0].AsArr() != nil) }),
 		"from": BuiltinFn("from", func(a []Value) Value {
 			arr := NewArr(0)
-			if len(a) > 0 {
-				if o := a[0].AsArr(); o != nil {
-					arr.elems = append(arr.elems, o.elems...)
-				} else if o := a[0].AsObj(); o != nil {
-					for _, k := range o.keys() {
-						arr.elems = append(arr.elems, o.get(k))
-					}
-				} else if s := a[0].AsStr(); len(s) > 0 {
-					for i := 0; i < len(s); i++ {
-						arr.elems = append(arr.elems, Str(string(s[i])))
-					}
+			if len(a) == 0 {
+				return ArrVal(arr)
+			}
+			src := a[0]
+			switch {
+			case src.AsArr() != nil:
+				arr.elems = append(arr.elems, src.AsArr().elems...)
+			case src.tag == tStr:
+				s := src.AsStr()
+				for i := 0; i < len(s); i++ {
+					arr.elems = append(arr.elems, Str(string(s[i])))
 				}
+			case src.AsObj() != nil:
+				o := src.AsObj()
+				for _, k := range o.keys() {
+					arr.elems = append(arr.elems, o.get(k))
+				}
+			default:
+				// Iterables that are host values (Map, Set, iterators).
+				_ = vm.spreadIterable(src, func(v Value) { arr.elems = append(arr.elems, v) })
 			}
 			return ArrVal(arr)
 		}),
