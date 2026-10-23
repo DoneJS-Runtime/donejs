@@ -124,10 +124,13 @@ The engine runs these benchmarks 20x slower than V8; that gap is real JIT
 (Turbofan), which this engine deliberately does not do.
 
 Known limits: the engine covers the syntax the runtime's builtins and selftest
-rely on - classes, private fields, generators and async generators, `yield*`
-delegation, `for await`, spread, template literals, `try`/`catch`, BigInt,
-optional chaining, and ES modules - and the host bridge is a tagged value
-model, not the full ES object model. Output goes through `print`/`console.log`.
+rely on - classes (with static fields and static initialization blocks),
+private fields, generators and async generators, `yield*` delegation, `for
+await`, spread, template literals and tagged templates (`String.raw`), `try`/
+`catch`, BigInt, optional chaining, logical assignment (`||=`, `&&=`, `??=`),
+array elisions (`[,,1]`), numeric literals (binary, octal, digit separators,
+BigInt) and ES modules - and the host bridge is a tagged value model, not the
+full ES object model. Output goes through `print`/`console.log`.
 
 ## Security
 

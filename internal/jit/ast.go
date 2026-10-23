@@ -223,6 +223,7 @@ type Method struct {
 	Field    bool // class field initializer
 	Value    Expr // when Field
 	Fn       FuncExpr
+	Block    []Stmt // static initialization block body
 }
 
 // ---- statements ----

@@ -413,14 +413,18 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 
 	var ctor *FuncExpr
 	var fieldInits []Stmt
-	var staticInits []Stmt
+	var staticSteps []Stmt
 	for _, m := range n.Methods {
+		if m.Block != nil {
+			staticSteps = append(staticSteps, &BlockStmt{Body: m.Block})
+			continue
+		}
 		if m.Field {
 			if m.Static {
 				if m.Value != nil {
 					// Static fields are data properties of the class value itself,
 					// initialized in the class declaration before it is constructed.
-					staticInits = append(staticInits, &ExprStmt{X: &AssignExpr{Op: "=", Target: &MemberExpr{Obj: &Ident{Name: n.Name}, Prop: &StringLit{Value: m.Name}}, Value: m.Value}})
+					staticSteps = append(staticSteps, &ExprStmt{X: &AssignExpr{Op: "=", Target: &MemberExpr{Obj: &Ident{Name: n.Name}, Prop: &StringLit{Value: m.Name}}, Value: m.Value}})
 				}
 				continue
 			}
@@ -458,8 +462,24 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 	}
 	c.emit(OpClass, c.constIndex(ClassVal(cls)), 0)
 	c.assignIdent(n.Name)
-	for _, si := range staticInits {
-		c.stmt(si)
+	// Static fields and static blocks run once, in source order, with `this`
+	// bound to the class value.
+	if len(staticSteps) > 0 {
+		if slot, ok := c.resolve(n.Name); ok {
+			outerThis := c.thisSlot
+			c.pushScope()
+			top := c.scopes[len(c.scopes)-1]
+			c.declare(top, "this")
+			tmp := top["this"]
+			c.loadVar(slot)
+			c.storeVar(tmp)
+			c.thisSlot = tmp
+			for _, s := range staticSteps {
+				c.stmt(s)
+			}
+			c.thisSlot = outerThis
+			c.scopes = c.scopes[:len(c.scopes)-1]
+		}
 	}
 }
 

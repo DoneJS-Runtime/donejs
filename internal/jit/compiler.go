@@ -1085,6 +1085,12 @@ func (c *Compiler) assign(n *AssignExpr) {
 		c.expr(n.Value)
 		return
 	}
+	// logical assignment: `a ||= b`, `a &&= b`, `a ??= b` set only when the
+	// current value fails/passes the test; the value stays on the stack.
+	if n.Op == "||=" || n.Op == "&&=" || n.Op == "??=" {
+		c.logicalAssign(n)
+		return
+	}
 	// compound assignment: read, modify, write
 	if t, ok := n.Target.(*Ident); ok {
 		if slot, ok := c.resolve(t.Name); ok {
@@ -1117,6 +1123,96 @@ func (c *Compiler) assignIdent(name string) {
 		return
 	}
 	c.emit(OpStoreGlobal, c.constIndex(Str(name)), 0)
+}
+
+// logicalAssign compiles `target op= value` as a short-circuiting update:
+// `a ||= b` evaluates b only when a is falsy and leaves a's final value on
+// the stack, matching `a || (a = b)`.
+func (c *Compiler) logicalAssign(n *AssignExpr) {
+	switch t := n.Target.(type) {
+	case *Ident:
+		if slot, ok := c.resolve(t.Name); ok {
+			c.loadVar(slot)
+			c.emit(OpDup, 0, 0)
+			j := c.logicalCondJump(n.Op)
+			end := c.emit(OpJump, -1, 0)
+			c.patch(j, len(c.cur.Code))
+			c.emit(OpPop, 0, 0)
+			c.expr(n.Value)
+			c.emit(OpDup, 0, 0)
+			c.storeVar(slot)
+			c.patch(end, len(c.cur.Code))
+			return
+		}
+		if s, ok := c.capture(t.Name); ok {
+			c.loadVar(s)
+			c.emit(OpDup, 0, 0)
+			j := c.logicalCondJump(n.Op)
+			end := c.emit(OpJump, -1, 0)
+			c.patch(j, len(c.cur.Code))
+			c.emit(OpPop, 0, 0)
+			c.expr(n.Value)
+			c.emit(OpDup, 0, 0)
+			c.storeVar(s)
+			c.patch(end, len(c.cur.Code))
+			return
+		}
+		c.emit(OpLoadGlobal, c.constIndex(Str(t.Name)), 0)
+		c.emit(OpDup, 0, 0)
+		j := c.logicalCondJump(n.Op)
+		end := c.emit(OpJump, -1, 0)
+		c.patch(j, len(c.cur.Code))
+		c.emit(OpPop, 0, 0)
+		c.expr(n.Value)
+		c.emit(OpDup, 0, 0)
+		c.emit(OpStoreGlobal, c.constIndex(Str(t.Name)), 0)
+		c.patch(end, len(c.cur.Code))
+		return
+	case *MemberExpr:
+		// Evaluate the object once, into a scratch local, so a setter or a
+		// computed key is not re-run on the assign path.
+		tmp := c.allocLocal("")
+		c.expr(t.Obj)
+		c.storeVar(tmp)
+		c.loadVar(tmp)
+		if t.Computed {
+			c.expr(t.Prop)
+			c.emit(OpGetIndex, 0, 0)
+		} else {
+			c.emit(OpGetField, c.constIndex(Str(t.Prop.(*StringLit).Value)), 0)
+		}
+		c.emit(OpDup, 0, 0)
+		j := c.logicalCondJump(n.Op)
+		end := c.emit(OpJump, -1, 0)
+		c.patch(j, len(c.cur.Code))
+		c.emit(OpPop, 0, 0)
+		c.loadVar(tmp)
+		if t.Computed {
+			c.expr(t.Prop)
+			c.expr(n.Value)
+			c.emit(OpSetIndex, 0, 0)
+		} else {
+			c.expr(n.Value)
+			c.emit(OpSetField, c.constIndex(Str(t.Prop.(*StringLit).Value)), 0)
+		}
+		c.patch(end, len(c.cur.Code))
+		return
+	}
+	c.expr(n.Value)
+}
+
+// logicalCondJump emits the test that jumps to the assignment block. The
+// tested value is consumed by the jump.
+func (c *Compiler) logicalCondJump(op string) int {
+	switch op {
+	case "||=":
+		return c.emit(OpJumpIfFalse, -1, 0)
+	case "&&=":
+		return c.emit(OpJumpIfTrue, -1, 0)
+	default: // "??="
+		c.emit(OpIsNull, 0, 0)
+		return c.emit(OpJumpIfTrue, -1, 0)
+	}
 }
 
 func (c *Compiler) compoundOp(op string) Op {

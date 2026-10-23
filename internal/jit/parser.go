@@ -775,7 +775,18 @@ func (p *parser) classDecl() (Stmt, error) {
 			p.next()
 			static = true
 			if p.at("{") {
-				return nil, p.errf("static class blocks are not supported")
+				// static initialization block: statements run once, with
+				// `this` bound to the class value.
+				p.next()
+				body, err := p.block()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expect("}"); err != nil {
+					return nil, err
+				}
+				cd.Methods = append(cd.Methods, Method{Static: true, Block: body})
+				continue
 			}
 		}
 		gen := false
@@ -1318,7 +1329,7 @@ func (p *parser) assign() (Expr, error) {
 
 func isAssignOp(v string) bool {
 	switch v {
-	case "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "**=":
+	case "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "**=", "||=", "&&=", "??=":
 		return true
 	}
 	return false
