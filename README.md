@@ -19,7 +19,7 @@ donejs -e "console.log(process.argv)"
 ```sh
 go build -o donejs .
 go test ./...            # unit tests
-./donejs --selftest      # 34 runtime API checks
+./donejs --selftest      # 38 runtime API checks
 ```
 
 ## CLI
@@ -124,9 +124,10 @@ The engine runs these benchmarks 20x slower than V8; that gap is real JIT
 (Turbofan), which this engine deliberately does not do.
 
 Known limits: the engine covers the syntax the runtime's builtins and selftest
-rely on - classes, private fields, generators, spread, template literals,
-`try`/`catch`, BigInt - but not async functions, and the host bridge is a tagged
-value model, not the full ES object model. Output goes through `print`/`console.log`.
+rely on - classes, private fields, generators and async generators, `yield*`
+delegation, `for await`, spread, template literals, `try`/`catch`, BigInt,
+optional chaining, and ES modules - and the host bridge is a tagged value
+model, not the full ES object model. Output goes through `print`/`console.log`.
 
 ## Security
 
@@ -164,6 +165,6 @@ additionally bypasses the per-command policy.
 
 ## Testing
 
-* `internal/vm/selftest.go` - 34 checks over the public API surface, executed
+* `internal/vm/selftest.go` - 38 checks over the public API surface, executed
   by `donejs --selftest` and by `go test`.
 * `internal/vm/selftest_test.go` - the `go test` wrapper.
