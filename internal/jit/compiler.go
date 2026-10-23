@@ -865,6 +865,10 @@ func (c *Compiler) expr(e Expr) {
 		}
 		if !hasSpread {
 			for _, el := range n.Elems {
+				if el == nil {
+					c.emit(OpConst, c.constIndex(Undef()), 0)
+					continue
+				}
 				c.expr(el)
 			}
 			c.emit(OpMakeArray, int32(len(n.Elems)), 0)
@@ -872,6 +876,11 @@ func (c *Compiler) expr(e Expr) {
 		}
 		c.emit(OpNewArray, 0, 0)
 		for _, el := range n.Elems {
+			if el == nil {
+				c.emit(OpConst, c.constIndex(Undef()), 0)
+				c.emit(OpArrayPush, 0, 0)
+				continue
+			}
 			if sp, ok := el.(*SpreadExpr); ok {
 				c.expr(sp.X)
 				c.emit(OpArrayPushAll, 0, 0)
@@ -891,6 +900,8 @@ func (c *Compiler) expr(e Expr) {
 		c.emit(OpMakeClosure, idx, 0)
 	case *TemplateLit:
 		c.templateLit(n)
+	case *TaggedTemplate:
+		c.taggedTemplate(n)
 	case *SpreadExpr:
 		c.expr(n.X)
 	case *OptMemberExpr:

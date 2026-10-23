@@ -128,7 +128,20 @@ func (vm *VM) vmStringCtor() Value {
 	keys := map[string]Value{}
 	keys["fromCharCode"] = BuiltinFn("fromCharCode", func(a []Value) Value { return Str(string(fromCharCodes(a))) })
 	keys["fromCodePoint"] = BuiltinFn("fromCodePoint", func(a []Value) Value { return Str(string(fromCodePoints(a))) })
-	keys["raw"] = BuiltinFn("raw", func(a []Value) Value { return Undef() })
+	keys["raw"] = BuiltinFn("raw", func(a []Value) Value {
+		arr := a[0].AsArr()
+		if arr == nil {
+			return Undef()
+		}
+		var sb strings.Builder
+		for i, el := range arr.elems {
+			sb.WriteString(el.toStr())
+			if i+1 < len(a) {
+				sb.WriteString(a[i+1].toStr())
+			}
+		}
+		return Str(sb.String())
+	})
 	c := builtin{name: "String"}
 	c.fn = func(a []Value) Value { return Str(strArg(a)) }
 	c.props = keys

@@ -5,7 +5,10 @@
 // hidden classes for object layout.
 package jit
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 type tokKind int
 
@@ -149,32 +152,56 @@ func (l *lexer) number() {
 		l.emit(token{kind: tNumber, num: float64(v), val: l.src[start:l.pos]})
 		return
 	}
-	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
-		l.pos++
-	}
-	if l.pos < len(l.src) && l.src[l.pos] == '.' {
-		l.pos++
-		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+	if l.src[l.pos] == '0' && (l.peek(1) == 'b' || l.peek(1) == 'B') {
+		l.pos += 2
+		for l.pos < len(l.src) && isBinDigit(l.src[l.pos]) {
 			l.pos++
 		}
+		v, _ := strconv.ParseInt(l.src[start+2:l.pos], 2, 64)
+		l.emit(token{kind: tNumber, num: float64(v), val: l.src[start:l.pos]})
+		return
 	}
-	if l.pos < len(l.src) && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
-		l.pos++
-		if l.pos < len(l.src) && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
+	if l.src[l.pos] == '0' && (l.peek(1) == 'o' || l.peek(1) == 'O') {
+		l.pos += 2
+		for l.pos < len(l.src) && isOctDigit(l.src[l.pos]) {
 			l.pos++
 		}
-		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
-			l.pos++
+		v, _ := strconv.ParseInt(l.src[start+2:l.pos], 8, 64)
+		l.emit(token{kind: tNumber, num: float64(v), val: l.src[start:l.pos]})
+		return
+	}
+	digits := l.src[l.pos:]
+	end := 0
+	for end < len(digits) && (digits[end] == '_' || (digits[end] >= '0' && digits[end] <= '9')) {
+		end++
+	}
+	if end < len(digits) && digits[end] == '.' {
+		end++
+		for end < len(digits) && (digits[end] == '_' || (digits[end] >= '0' && digits[end] <= '9')) {
+			end++
 		}
 	}
-	if l.pos < len(l.src) && l.src[l.pos] == 'n' {
-		l.pos++
+	if end < len(digits) && (digits[end] == 'e' || digits[end] == 'E') {
+		end++
+		if end < len(digits) && (digits[end] == '+' || digits[end] == '-') {
+			end++
+		}
+		for end < len(digits) && (digits[end] == '_' || (digits[end] >= '0' && digits[end] <= '9')) {
+			end++
+		}
+	}
+	if l.pos+end < len(l.src) && l.src[l.pos+end] == 'n' {
+		l.pos += end + 1
 		l.emit(token{kind: tBigInt, val: l.src[start : l.pos-1]})
 		return
 	}
-	v, _ := strconv.ParseFloat(l.src[start:l.pos], 64)
+	l.pos += end
+	v, _ := strconv.ParseFloat(strings.ReplaceAll(l.src[start:l.pos], "_", ""), 64)
 	l.emit(token{kind: tNumber, num: v, val: l.src[start:l.pos]})
 }
+
+func isBinDigit(c byte) bool { return c == '_' || (c >= '0' && c <= '1') }
+func isOctDigit(c byte) bool { return c == '_' || (c >= '0' && c <= '7') }
 
 // regex scans a `/pattern/flags` literal.
 func (l *lexer) regex() {

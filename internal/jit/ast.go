@@ -130,6 +130,13 @@ type TemplateLit struct {
 	Exprs []Expr
 }
 
+// TaggedTemplate is `tag`a${x}b“: the tag applied to the template's cooked
+// strings and substitutions, as tag(strings, ...values).
+type TaggedTemplate struct {
+	Tag Expr
+	Tpl *TemplateLit
+}
+
 // ArrayPat / ObjectPat are destructuring targets.
 type ArrayPat struct {
 	Elems []PatElem
@@ -318,32 +325,33 @@ type DynamicImport struct{ X Expr }
 
 // ---- node markers ----
 
-func (*NumberLit) node()     {}
-func (*StringLit) node()     {}
-func (*RegExpLit) node()     {}
-func (*BoolLit) node()       {}
-func (*NullLit) node()       {}
-func (*UndefLit) node()      {}
-func (*Ident) node()         {}
-func (*ThisExpr) node()      {}
-func (*UnaryExpr) node()     {}
-func (*BinaryExpr) node()    {}
-func (*LogicalExpr) node()   {}
-func (*AssignExpr) node()    {}
-func (*CondExpr) node()      {}
-func (*CallExpr) node()      {}
-func (*NewExpr) node()       {}
-func (*MemberExpr) node()    {}
-func (*OptMemberExpr) node() {}
-func (*OptCallExpr) node()   {}
-func (*ArrayLit) node()      {}
-func (*ObjectLit) node()     {}
-func (*FuncExpr) node()      {}
-func (*AwaitExpr) node()     {}
-func (*YieldExpr) node()     {}
-func (*ArrowFunc) node()     {}
-func (*TemplateLit) node()   {}
-func (*ClassDecl) node()     {}
+func (*NumberLit) node()      {}
+func (*StringLit) node()      {}
+func (*RegExpLit) node()      {}
+func (*BoolLit) node()        {}
+func (*NullLit) node()        {}
+func (*UndefLit) node()       {}
+func (*Ident) node()          {}
+func (*ThisExpr) node()       {}
+func (*UnaryExpr) node()      {}
+func (*BinaryExpr) node()     {}
+func (*LogicalExpr) node()    {}
+func (*AssignExpr) node()     {}
+func (*CondExpr) node()       {}
+func (*CallExpr) node()       {}
+func (*NewExpr) node()        {}
+func (*MemberExpr) node()     {}
+func (*OptMemberExpr) node()  {}
+func (*OptCallExpr) node()    {}
+func (*ArrayLit) node()       {}
+func (*ObjectLit) node()      {}
+func (*FuncExpr) node()       {}
+func (*AwaitExpr) node()      {}
+func (*YieldExpr) node()      {}
+func (*ArrowFunc) node()      {}
+func (*TemplateLit) node()    {}
+func (*TaggedTemplate) node() {}
+func (*ClassDecl) node()      {}
 
 func (*ExprStmt) node()     {}
 func (*VarDecl) node()      {}
@@ -377,31 +385,32 @@ func (*ExportValue) stmt()   {}
 func (*DynamicImport) node() {}
 func (*DynamicImport) expr() {}
 
-func (*NumberLit) expr()     {}
-func (*StringLit) expr()     {}
-func (*RegExpLit) expr()     {}
-func (*BoolLit) expr()       {}
-func (*NullLit) expr()       {}
-func (*UndefLit) expr()      {}
-func (*Ident) expr()         {}
-func (*ThisExpr) expr()      {}
-func (*UnaryExpr) expr()     {}
-func (*BinaryExpr) expr()    {}
-func (*LogicalExpr) expr()   {}
-func (*AssignExpr) expr()    {}
-func (*CondExpr) expr()      {}
-func (*CallExpr) expr()      {}
-func (*NewExpr) expr()       {}
-func (*MemberExpr) expr()    {}
-func (*OptMemberExpr) expr() {}
-func (*OptCallExpr) expr()   {}
-func (*ArrayLit) expr()      {}
-func (*SpreadExpr) expr()    {}
-func (*ObjectLit) expr()     {}
-func (*ArrowFunc) expr()     {}
-func (*TemplateLit) expr()   {}
-func (*FuncExpr) expr()      {}
-func (*AwaitExpr) expr()     {}
+func (*NumberLit) expr()      {}
+func (*StringLit) expr()      {}
+func (*RegExpLit) expr()      {}
+func (*BoolLit) expr()        {}
+func (*NullLit) expr()        {}
+func (*UndefLit) expr()       {}
+func (*Ident) expr()          {}
+func (*ThisExpr) expr()       {}
+func (*UnaryExpr) expr()      {}
+func (*BinaryExpr) expr()     {}
+func (*LogicalExpr) expr()    {}
+func (*AssignExpr) expr()     {}
+func (*CondExpr) expr()       {}
+func (*CallExpr) expr()       {}
+func (*NewExpr) expr()        {}
+func (*MemberExpr) expr()     {}
+func (*OptMemberExpr) expr()  {}
+func (*OptCallExpr) expr()    {}
+func (*ArrayLit) expr()       {}
+func (*SpreadExpr) expr()     {}
+func (*ObjectLit) expr()      {}
+func (*ArrowFunc) expr()      {}
+func (*TemplateLit) expr()    {}
+func (*TaggedTemplate) expr() {}
+func (*FuncExpr) expr()       {}
+func (*AwaitExpr) expr()      {}
 
 func (*ForOfStmt) stmt()    {}
 func (*SwitchStmt) stmt()   {}

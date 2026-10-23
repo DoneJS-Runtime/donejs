@@ -273,6 +273,21 @@ func (c *Compiler) templateLit(n *TemplateLit) {
 	}
 }
 
+// taggedTemplate compiles “tag`a${x}b` “: build the cooked strings array,
+// push the substitutions, and call the tag with (strings, ...values).
+func (c *Compiler) taggedTemplate(n *TaggedTemplate) {
+	c.expr(n.Tag)
+	c.emit(OpNewArray, 0, 0)
+	for _, part := range n.Tpl.Parts {
+		c.expr(&StringLit{Value: part})
+		c.emit(OpArrayPush, 0, 0)
+	}
+	for _, e := range n.Tpl.Exprs {
+		c.expr(e)
+	}
+	c.emit(OpCall, c.constIndex(Str("taggedTemplate")), int32(1+len(n.Tpl.Exprs)))
+}
+
 // ---- optional chaining ----
 
 func (c *Compiler) optMember(n *OptMemberExpr) {
@@ -398,8 +413,17 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 
 	var ctor *FuncExpr
 	var fieldInits []Stmt
+	var staticInits []Stmt
 	for _, m := range n.Methods {
 		if m.Field {
+			if m.Static {
+				if m.Value != nil {
+					// Static fields are data properties of the class value itself,
+					// initialized in the class declaration before it is constructed.
+					staticInits = append(staticInits, &ExprStmt{X: &AssignExpr{Op: "=", Target: &MemberExpr{Obj: &Ident{Name: n.Name}, Prop: &StringLit{Value: m.Name}}, Value: m.Value}})
+				}
+				continue
+			}
 			if !m.Computed {
 				fieldInits = append(fieldInits, &ExprStmt{X: &AssignExpr{Op: "=", Target: &MemberExpr{Obj: &ThisExpr{}, Prop: &StringLit{Value: m.Name}}, Value: m.Value}})
 			}
@@ -434,6 +458,9 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 	}
 	c.emit(OpClass, c.constIndex(ClassVal(cls)), 0)
 	c.assignIdent(n.Name)
+	for _, si := range staticInits {
+		c.stmt(si)
+	}
 }
 
 // addMethodProto compiles a method into a prototype with `this` at slot 0 and

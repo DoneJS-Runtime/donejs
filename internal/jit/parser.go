@@ -774,6 +774,9 @@ func (p *parser) classDecl() (Stmt, error) {
 		if p.isKeyword("static") {
 			p.next()
 			static = true
+			if p.at("{") {
+				return nil, p.errf("static class blocks are not supported")
+			}
 		}
 		gen := false
 		if p.at("*") {
@@ -833,6 +836,12 @@ func (p *parser) classDecl() (Stmt, error) {
 					return nil, err
 				}
 				cd.Methods = append(cd.Methods, Method{Name: name, Static: static, Async: async, Field: true, Value: v})
+				continue
+			}
+			if p.at(";") || p.at("}") {
+				// Field declaration without an initializer: the value is
+				// undefined until a constructor or static initializer sets it.
+				cd.Methods = append(cd.Methods, Method{Name: name, Static: static, Async: async, Field: true})
 				continue
 			}
 			return nil, p.errf("expected (")
@@ -1476,6 +1485,13 @@ func (p *parser) postfix() (Expr, error) {
 			}
 			p.next()
 			x = &AssignExpr{Op: op, Target: x, Value: &NumberLit{Value: 1}}
+		case p.cur().kind == tTplStart:
+			p.next()
+			tpl, err := p.templateLit()
+			if err != nil {
+				return nil, err
+			}
+			x = &TaggedTemplate{Tag: x, Tpl: tpl.(*TemplateLit)}
 		default:
 			return x, nil
 		}
@@ -1630,6 +1646,12 @@ func (p *parser) primary() (Expr, error) {
 		case "[":
 			var elems []Expr
 			for !p.at("]") && p.cur().kind != tEOF {
+				if p.at(",") {
+					// Elision hole: `[,1]`, `[1,,2]`, `[,,]`.
+					elems = append(elems, nil)
+					p.next()
+					continue
+				}
 				if p.accept("...") {
 					x, err := p.assign()
 					if err != nil {
