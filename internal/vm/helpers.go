@@ -7,25 +7,25 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // binResult marks byte payloads that must be handed to JS as an ArrayBuffer.
 type binResult []byte
 
 // toJS converts a Go result into a JS value on the JS thread.
-func (rt *Runtime) toJS(v any) goja.Value {
+func (rt *Runtime) toJS(v any) jit.Value {
 	switch t := v.(type) {
 	case nil:
-		return goja.Null()
-	case goja.Value:
+		return jit.Null()
+	case jit.Value:
 		return t
 	case binResult:
-		return rt.vm.ToValue(rt.vm.NewArrayBuffer([]byte(t)))
+		return jit.ArrayBufferValue([]byte(t))
 	case []byte:
-		return rt.vm.ToValue(rt.vm.NewArrayBuffer(t))
+		return jit.ArrayBufferValue(t)
 	default:
-		return rt.vm.ToValue(v)
+		return jit.FromGo(v)
 	}
 }
 
@@ -34,39 +34,37 @@ func printlnStderr(s string) {
 }
 
 // splitCB returns the trailing callback argument when it is a function.
-func splitCB(call goja.FunctionCall) (goja.Value, bool) {
-	n := len(call.Arguments)
-	if n == 0 {
-		return nil, false
+func splitCB(args []jit.Value) (jit.Value, bool) {
+	if len(args) == 0 {
+		return jit.Undef(), false
 	}
-	last := call.Argument(n - 1)
-	if _, ok := goja.AssertFunction(last); ok {
+	last := args[len(args)-1]
+	if last.IsCallable() {
 		return last, true
 	}
-	return nil, false
+	return jit.Undef(), false
 }
 
 // encodingFromOptions extracts a string encoding from fs-style options.
-func encodingFromOptions(call goja.FunctionCall, argIdx int) string {
-	if len(call.Arguments) <= argIdx {
+func encodingFromOptions(args []jit.Value, argIdx int) string {
+	if len(args) <= argIdx {
 		return ""
 	}
-	v := call.Argument(argIdx)
+	v := argsAt(args, argIdx)
 	if s, ok := v.Export().(string); ok {
 		return s
 	}
-	if o, ok := v.(*goja.Object); ok {
-		if e := o.Get("encoding"); e != nil && !goja.IsUndefined(e) && !goja.IsNull(e) {
-			return e.String()
-		}
+	if o := argObj(args, argIdx); !o.IsUndef() && !o.Get("encoding").IsUndef() {
+		return o.Get("encoding").String()
 	}
 	return ""
 }
 
-// jsError converts a Go error into a Node-style JS Error with code/errno/syscall/path.
-func (rt *Runtime) jsError(err error) goja.Value {
+// jsThrow converts a Go error into a JS ThrowError carrying name, message and
+// Node-style error properties.
+func (rt *Runtime) jsThrow(err error) *jit.ThrowError {
 	if err == nil {
-		return goja.Null()
+		return nil
 	}
 	code := ""
 	sysName := ""
@@ -104,18 +102,18 @@ func (rt *Runtime) jsError(err error) goja.Value {
 		msg = err.Error()
 	}
 
-	ex := rt.vm.NewGoError(errors.New(msg))
-	ex.Set("errno", int64(errno))
+	ev := jit.ErrObj("Error", msg)
+	ev.Set("errno", int64(errno))
 	if code != "" {
-		ex.Set("code", code)
+		ev.Set("code", code)
 	}
 	if sysName != "" {
-		ex.Set("syscall", sysName)
+		ev.Set("syscall", sysName)
 	}
 	if pth != "" {
-		ex.Set("path", pth)
+		ev.Set("path", pth)
 	}
-	return ex
+	return &jit.ThrowError{Value: ev}
 }
 
 func asErrno(err error) syscall.Errno {
@@ -227,23 +225,23 @@ func (rt *Runtime) fileStat(st os.FileInfo) map[string]any {
 	isDir := st.Mode().IsDir()
 	isLink := st.Mode()&os.ModeSymlink != 0
 	return map[string]any{
-		"dev":         int64(0),
-		"mode":        mode,
-		"nlink":       int64(1),
-		"uid":         int64(0),
-		"gid":         int64(0),
-		"rdev":        int64(0),
-		"size":        st.Size(),
-		"blksize":     int64(4096),
-		"blocks":      (st.Size() + 511) / 512,
-		"atimeMs":     float64(mtime.UnixMilli()),
-		"mtimeMs":     float64(mtime.UnixMilli()),
-		"ctimeMs":     float64(mtime.UnixMilli()),
-		"birthtimeMs": float64(mtime.UnixMilli()),
-		"atime":       mtime,
-		"mtime":       mtime,
-		"ctime":       mtime,
-		"birthtime":   mtime,
+		"dev":               int64(0),
+		"mode":              mode,
+		"nlink":             int64(1),
+		"uid":               int64(0),
+		"gid":               int64(0),
+		"rdev":              int64(0),
+		"size":              st.Size(),
+		"blksize":           int64(4096),
+		"blocks":            (st.Size() + 511) / 512,
+		"atimeMs":           float64(mtime.UnixMilli()),
+		"mtimeMs":           float64(mtime.UnixMilli()),
+		"ctimeMs":           float64(mtime.UnixMilli()),
+		"birthtimeMs":       float64(mtime.UnixMilli()),
+		"atime":             mtime,
+		"mtime":             mtime,
+		"ctime":             mtime,
+		"birthtime":         mtime,
 		"isFile":            func() bool { return isFile },
 		"isDirectory":       func() bool { return isDir },
 		"isSymbolicLink":    func() bool { return isLink },
@@ -256,20 +254,19 @@ func (rt *Runtime) fileStat(st os.FileInfo) map[string]any {
 
 // --- callback registry -------------------------------------------------
 
-func (rt *Runtime) regCB(cb goja.Value) uint64 {
-	f, ok := goja.AssertFunction(cb)
-	if !ok {
+func (rt *Runtime) regCB(cb jit.Value) uint64 {
+	if !cb.IsCallable() {
 		return 0
 	}
 	rt.mu.Lock()
 	rt.nextCB++
 	id := rt.nextCB
-	rt.cbs[id] = f
+	rt.cbs[id] = cb
 	rt.mu.Unlock()
 	return id
 }
 
-func (rt *Runtime) takeCB(id uint64) goja.Callable {
+func (rt *Runtime) takeCB(id uint64) jit.Value {
 	rt.mu.Lock()
 	f := rt.cbs[id]
 	delete(rt.cbs, id)
@@ -277,22 +274,22 @@ func (rt *Runtime) takeCB(id uint64) goja.Callable {
 	return f
 }
 
-func (rt *Runtime) invokeCB(id uint64, args ...goja.Value) {
+func (rt *Runtime) invokeCB(id uint64, args ...jit.Value) {
 	f := rt.takeCB(id)
-	if f == nil {
+	if !f.IsCallable() {
 		return
 	}
-	if _, err := f(goja.Undefined(), args...); err != nil {
+	if _, err := rt.jit.CallBind(f, jit.Undef(), args...); err != nil {
 		rt.reportUncaught(err)
 	}
 }
 
 // asyncOp runs work off-thread and delivers (err, result) to cb on the JS thread.
 // It keeps the process alive until the callback is delivered.
-func (rt *Runtime) asyncOp(cb goja.Value, work func() (any, error)) {
+func (rt *Runtime) asyncOp(cb jit.Value, work func() (any, error)) {
 	id := rt.regCB(cb)
 	if id == 0 {
-		panic(rt.vm.NewTypeError("callback required"))
+		panic(jit.Err("TypeError", "callback required"))
 	}
 	rt.pending++
 	go func() {
@@ -300,28 +297,28 @@ func (rt *Runtime) asyncOp(cb goja.Value, work func() (any, error)) {
 		rt.Enqueue(func() {
 			rt.pending--
 			if err != nil {
-				rt.invokeCB(id, rt.jsError(err))
+				rt.invokeCB(id, rt.jsThrow(err).Value)
 			} else {
-				rt.invokeCB(id, goja.Null(), rt.toJS(v))
+				rt.invokeCB(id, rt.toJS(v))
 			}
 		})
 	}()
 }
 
 // goPromise runs work off-thread and settles a JS Promise.
-func (rt *Runtime) goPromise(work func() (any, error)) goja.Value {
-	p, resolve, reject := rt.vm.NewPromise()
+func (rt *Runtime) goPromise(work func() (any, error)) jit.Value {
+	p, resolve, reject := rt.jit.NewPromise()
 	rt.pending++
 	go func() {
 		v, err := work()
 		rt.Enqueue(func() {
 			rt.pending--
 			if err != nil {
-				reject(rt.jsError(err))
+				reject(rt.jsThrow(err).Value)
 			} else {
 				resolve(rt.toJS(v))
 			}
 		})
 	}()
-	return rt.vm.ToValue(p)
+	return jit.PromiseVal(p)
 }

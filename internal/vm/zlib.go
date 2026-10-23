@@ -15,7 +15,7 @@ import (
 	"hash"
 	"io"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func md5New() hash.Hash { return md5.New() }
@@ -63,10 +63,10 @@ func pbkdf2Key(password, salt []byte, iter, keyLen int, digest string, out []byt
 }
 
 func (rt *Runtime) registerZlib() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
 	sync := opTable{
-		"gzip": func(a []goja.Value) (any, error) {
+		"gzip": func(a []jit.Value) (any, error) {
 			var out bytes.Buffer
 			w := gzip.NewWriter(&out)
 			if _, err := w.Write(rt.argBytes(a, 0)); err != nil {
@@ -77,7 +77,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(out.Bytes()), nil
 		},
-		"gunzip": func(a []goja.Value) (any, error) {
+		"gunzip": func(a []jit.Value) (any, error) {
 			r, err := gzip.NewReader(bytes.NewReader(rt.argBytes(a, 0)))
 			if err != nil {
 				return nil, err
@@ -89,7 +89,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(b), nil
 		},
-		"deflate": func(a []goja.Value) (any, error) {
+		"deflate": func(a []jit.Value) (any, error) {
 			var out bytes.Buffer
 			w, err := zlib.NewWriterLevel(&out, zlib.DefaultCompression)
 			if err != nil {
@@ -103,7 +103,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(out.Bytes()), nil
 		},
-		"inflate": func(a []goja.Value) (any, error) {
+		"inflate": func(a []jit.Value) (any, error) {
 			r, err := zlib.NewReader(bytes.NewReader(rt.argBytes(a, 0)))
 			if err != nil {
 				return nil, err
@@ -115,7 +115,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(b), nil
 		},
-		"deflateRaw": func(a []goja.Value) (any, error) {
+		"deflateRaw": func(a []jit.Value) (any, error) {
 			var out bytes.Buffer
 			w, err := flate.NewWriter(&out, flate.DefaultCompression)
 			if err != nil {
@@ -129,7 +129,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(out.Bytes()), nil
 		},
-		"inflateRaw": func(a []goja.Value) (any, error) {
+		"inflateRaw": func(a []jit.Value) (any, error) {
 			r := flate.NewReader(bytes.NewReader(rt.argBytes(a, 0)))
 			defer r.Close()
 			b, err := io.ReadAll(r)
@@ -138,7 +138,7 @@ func (rt *Runtime) registerZlib() {
 			}
 			return binResult(b), nil
 		},
-		"crc32": func(a []goja.Value) (any, error) {
+		"crc32": func(a []jit.Value) (any, error) {
 			return int64(crc32IEEE(rt.argBytes(a, 0))), nil
 		},
 	}

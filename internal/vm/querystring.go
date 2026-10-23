@@ -4,17 +4,17 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerQuerystring() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
-	mod.Set("parse", func(call goja.FunctionCall) goja.Value {
-		s := call.Argument(0).String()
+	setFn(mod, "parse", func(args []jit.Value) jit.Value {
+		s := argsAt(args, 0).String()
 		sep := "&"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			sep = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			sep = args[1].String()
 		}
 		out := map[string]any{}
 		for _, part := range strings.Split(s, sep) {
@@ -41,25 +41,25 @@ func (rt *Runtime) registerQuerystring() {
 		return rt.toJS(out)
 	})
 
-	mod.Set("stringify", func(call goja.FunctionCall) goja.Value {
-		obj := argObj([]goja.Value{call.Argument(0)}, 0)
-		if obj == nil {
-			return rt.vm.ToValue("")
+	setFn(mod, "stringify", func(args []jit.Value) jit.Value {
+		obj := argObj(args, 0)
+		if obj.IsUndef() {
+			return jit.Str("")
 		}
 		sep := "&"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			sep = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			sep = args[1].String()
 		}
 		eq := "="
-		if len(call.Arguments) > 2 && !goja.IsUndefined(call.Argument(2)) {
-			eq = call.Argument(2).String()
+		if len(args) > 2 && !args[2].IsUndef() {
+			eq = args[2].String()
 		}
 		keys := obj.Keys()
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			v := obj.Get(k)
-			if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+			if v.IsUndef() || v.IsNull() {
 				continue
 			}
 			switch val := v.Export().(type) {
@@ -71,20 +71,20 @@ func (rt *Runtime) registerQuerystring() {
 				parts = append(parts, queryEscape(k)+eq+queryEscape(v.String()))
 			}
 		}
-		return rt.vm.ToValue(strings.Join(parts, sep))
+		return jit.Str(strings.Join(parts, sep))
 	})
 
-	mod.Set("escape", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(queryEscape(call.Argument(0).String()))
+	setFn(mod, "escape", func(args []jit.Value) jit.Value {
+		return jit.Str(queryEscape(argsAt(args, 0).String()))
 	})
-	mod.Set("unescape", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(queryUnescape(call.Argument(0).String()))
+	setFn(mod, "unescape", func(args []jit.Value) jit.Value {
+		return jit.Str(queryUnescape(argsAt(args, 0).String()))
 	})
-	mod.Set("decode", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(queryDecode(call.Argument(0).String()))
+	setFn(mod, "decode", func(args []jit.Value) jit.Value {
+		return jit.Str(queryDecode(argsAt(args, 0).String()))
 	})
-	mod.Set("encode", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(queryEscape(call.Argument(0).String()))
+	setFn(mod, "encode", func(args []jit.Value) jit.Value {
+		return jit.Str(queryEscape(argsAt(args, 0).String()))
 	})
 
 	rt.natives["__querystring"] = mod

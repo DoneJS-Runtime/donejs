@@ -2,30 +2,29 @@ package vm
 
 import (
 	"net"
-	"sync"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerNet() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
-	mod.Set("createServer", func(call goja.FunctionCall) goja.Value {
-		handler, ok := goja.AssertFunction(call.Argument(0))
-		if !ok {
-			panic(rt.vm.NewTypeError("connectionListener must be a function"))
+	setFn(mod, "createServer", func(args []jit.Value) jit.Value {
+		handler := argsAt(args, 0)
+		if !handler.IsCallable() {
+			panic(jit.Err("TypeError", "connectionListener must be a function"))
 		}
-		obj := rt.vm.NewObject()
-		obj.Set("listen", func(c goja.FunctionCall) goja.Value {
-			port := int(c.Argument(0).ToInteger())
+		obj := jit.Object()
+		obj.Set("listen", jit.BuiltinFn("listen", func(args []jit.Value) jit.Value {
+			port := int(argsAt(args, 0).ToInteger())
 			host := ""
-			if len(c.Arguments) > 1 && !goja.IsUndefined(c.Argument(1)) && !goja.IsNull(c.Argument(1)) {
-				host = c.Argument(1).String()
+			if len(args) > 1 && !args[1].IsUndef() && !args[1].IsNull() {
+				host = args[1].String()
 			}
-			cb, hasCB := splitCB(c)
+			cb, hasCB := splitCB(args)
 			ln, err := net.Listen("tcp", net.JoinHostPort(host, itoa(port)))
 			if err != nil {
-				panic(rt.vm.NewGoError(err))
+				panic(rt.jsThrow(err))
 			}
 			rt.ref()
 			go func() {
@@ -36,35 +35,39 @@ func (rt *Runtime) registerNet() {
 					}
 					rt.Enqueue(func() {
 						sock := rt.socketObject(conn)
-						if _, err := handler(goja.Undefined(), sock); err != nil {
+						if _, err := rt.jitCall(handler, jit.Undef(), sock); err != nil {
 							rt.reportUncaught(err)
 						}
 					})
 				}
 			}()
 			if hasCB {
-				if f, ok := goja.AssertFunction(cb); ok {
-					f(goja.Undefined(), goja.Null())
+				if f := cb; f.IsCallable() {
+					if _, err := rt.jitCall(f, jit.Undef(), jit.Null()); err != nil {
+						rt.reportUncaught(err)
+					}
 				}
 			}
 			return obj
-		})
-		obj.Set("close", func(c goja.FunctionCall) goja.Value {
-			cb, hasCB := splitCB(c)
+		}))
+		obj.Set("close", jit.BuiltinFn("close", func(args []jit.Value) jit.Value {
+			cb, hasCB := splitCB(args)
 			if hasCB {
-				if f, ok := goja.AssertFunction(cb); ok {
-					f(goja.Undefined(), goja.Null())
+				if f := cb; f.IsCallable() {
+					if _, err := rt.jitCall(f, jit.Undef(), jit.Null()); err != nil {
+						rt.reportUncaught(err)
+					}
 				}
 			}
 			rt.unref()
 			return obj
-		})
+		}))
 		return obj
 	})
 
-	mod.Set("connect", func(call goja.FunctionCall) goja.Value {
-		opts := argObj([]goja.Value{call.Argument(0)}, 0)
-		cb, hasCB := splitCB(call)
+	setFn(mod, "connect", func(args []jit.Value) jit.Value {
+		opts := argObj(args, 0)
+		cb, hasCB := splitCB(args)
 		host := optStr(opts, "host", "127.0.0.1")
 		port := optInt(opts, "port", 0)
 		go func() {
@@ -72,40 +75,44 @@ func (rt *Runtime) registerNet() {
 			rt.Enqueue(func() {
 				if err != nil {
 					if hasCB {
-						if f, ok := goja.AssertFunction(cb); ok {
-							f(goja.Undefined(), rt.jsError(err))
+						if f := cb; f.IsCallable() {
+							if _, e := rt.jitCall(f, jit.Undef(), rt.jsThrow(err).Value); e != nil {
+								rt.reportUncaught(e)
+							}
 						}
 					}
 					return
 				}
 				sock := rt.socketObject(conn)
 				if hasCB {
-					if f, ok := goja.AssertFunction(cb); ok {
-						f(goja.Undefined(), goja.Null(), sock)
+					if f := cb; f.IsCallable() {
+						if _, e := rt.jitCall(f, jit.Undef(), jit.Null(), sock); e != nil {
+							rt.reportUncaught(e)
+						}
 					}
 				}
 			})
 		}()
-		return goja.Undefined()
+		return jit.Undef()
 	})
 
-	mod.Set("isIP", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(net.ParseIP(call.Argument(0).String()) != nil)
+	setFn(mod, "isIP", func(args []jit.Value) jit.Value {
+		return jit.Bool(net.ParseIP(argsAt(args, 0).String()) != nil)
 	})
-	mod.Set("isIPv4", func(call goja.FunctionCall) goja.Value {
-		ip := net.ParseIP(call.Argument(0).String())
-		return rt.vm.ToValue(ip != nil && ip.To4() != nil)
+	setFn(mod, "isIPv4", func(args []jit.Value) jit.Value {
+		ip := net.ParseIP(argsAt(args, 0).String())
+		return jit.Bool(ip != nil && ip.To4() != nil)
 	})
-	mod.Set("isIPv6", func(call goja.FunctionCall) goja.Value {
-		ip := net.ParseIP(call.Argument(0).String())
-		return rt.vm.ToValue(ip != nil && ip.To4() == nil)
+	setFn(mod, "isIPv6", func(args []jit.Value) jit.Value {
+		ip := net.ParseIP(argsAt(args, 0).String())
+		return jit.Bool(ip != nil && ip.To4() == nil)
 	})
 
 	rt.natives["__net"] = mod
 }
 
 // socketObject wraps a net.Conn in a Node-like socket object.
-func (rt *Runtime) socketObject(conn net.Conn) goja.Value {
+func (rt *Runtime) socketObject(conn net.Conn) jit.Value {
 	st := rt.httpState()
 	st.mu.Lock()
 	st.connID++
@@ -115,29 +122,29 @@ func (rt *Runtime) socketObject(conn net.Conn) goja.Value {
 	rt.ref()
 
 	sock, sockEmitter := rt.newEmitterObject()
-	sock.Set("write", func(c goja.FunctionCall) goja.Value {
-		data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+	sock.Set("write", jit.BuiltinFn("write", func(args []jit.Value) jit.Value {
+		data := rt.argBytes(args, 0)
 		go func() {
 			_, _ = conn.Write(data)
 		}()
-		return rt.vm.ToValue(true)
-	})
-	sock.Set("end", func(c goja.FunctionCall) goja.Value {
-		if len(c.Arguments) > 0 {
-			data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+		return jit.Bool(true)
+	}))
+	sock.Set("end", jit.BuiltinFn("end", func(args []jit.Value) jit.Value {
+		if len(args) > 0 {
+			data := rt.argBytes(args, 0)
 			_, _ = conn.Write(data)
 		}
 		_ = conn.Close()
 		rt.unref()
 		return sock
-	})
-	sock.Set("destroy", func(c goja.FunctionCall) goja.Value {
+	}))
+	sock.Set("destroy", jit.BuiltinFn("destroy", func(args []jit.Value) jit.Value {
 		_ = conn.Close()
 		rt.unref()
 		return sock
-	})
-	sock.Set("setTimeout", func(c goja.FunctionCall) goja.Value { return sock })
-	sock.Set("setKeepAlive", func(c goja.FunctionCall) goja.Value { return sock })
+	}))
+	sock.Set("setTimeout", jit.BuiltinFn("setTimeout", func(args []jit.Value) jit.Value { return sock }))
+	sock.Set("setKeepAlive", jit.BuiltinFn("setKeepAlive", func(args []jit.Value) jit.Value { return sock }))
 	if addr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
 		sock.Set("localAddress", addr.IP.String())
 		sock.Set("localPort", addr.Port)
@@ -166,5 +173,3 @@ func (rt *Runtime) socketObject(conn net.Conn) goja.Value {
 	}()
 	return sock
 }
-
-var _ sync.Mutex

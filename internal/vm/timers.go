@@ -4,100 +4,97 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // registerTimers exposes the global timer functions.
 func (rt *Runtime) registerTimers() {
-	rt.natives["__timers"] = rt.vm.NewObject()
+	rt.natives["__timers"] = jit.Object()
 }
 
 // nSetTimeout implements global setTimeout.
-func (rt *Runtime) nSetTimeout(call goja.FunctionCall) goja.Value {
-	fn, ok := goja.AssertFunction(call.Argument(0))
-	if !ok {
-		panic(rt.vm.NewTypeError("callback must be a function"))
+func (rt *Runtime) nSetTimeout(args []jit.Value) jit.Value {
+	fn := argsAt(args, 0)
+	if !fn.IsCallable() {
+		panic(jit.Err("TypeError", "callback must be a function"))
 	}
 	delay := time.Duration(0)
-	if len(call.Arguments) > 1 {
-		delay = time.Duration(call.Argument(1).ToInteger()) * time.Millisecond
+	if len(args) > 1 {
+		delay = time.Duration(argInt(args, 1)) * time.Millisecond
 	}
-	var args []goja.Value
-	if len(call.Arguments) > 2 {
-		args = call.Arguments[2:]
+	var extra []jit.Value
+	if len(args) > 2 {
+		extra = args[2:]
 	}
-	id := rt.addTimer(delay, false, fn, goja.Undefined(), args)
-	return rt.vm.ToValue(id)
+	id := rt.addTimer(delay, false, fn, jit.Undef(), extra)
+	return jit.Num(float64(id))
 }
 
 // nSetInterval implements global setInterval.
-func (rt *Runtime) nSetInterval(call goja.FunctionCall) goja.Value {
-	fn, ok := goja.AssertFunction(call.Argument(0))
-	if !ok {
-		panic(rt.vm.NewTypeError("callback must be a function"))
+func (rt *Runtime) nSetInterval(args []jit.Value) jit.Value {
+	fn := argsAt(args, 0)
+	if !fn.IsCallable() {
+		panic(jit.Err("TypeError", "callback must be a function"))
 	}
 	delay := time.Duration(0)
-	if len(call.Arguments) > 1 {
-		delay = time.Duration(call.Argument(1).ToInteger()) * time.Millisecond
-	}
-	var args []goja.Value
-	if len(call.Arguments) > 2 {
-		args = call.Arguments[2:]
+	if len(args) > 1 {
+		delay = time.Duration(argInt(args, 1)) * time.Millisecond
 	}
 	if delay <= 0 {
 		delay = time.Millisecond
 	}
-	id := rt.addTimer(delay, true, fn, goja.Undefined(), args)
-	return rt.vm.ToValue(id)
+	var extra []jit.Value
+	if len(args) > 2 {
+		extra = args[2:]
+	}
+	id := rt.addTimer(delay, true, fn, jit.Undef(), extra)
+	return jit.Num(float64(id))
 }
 
 // nClearTimer implements clearTimeout/clearInterval/clearImmediate.
-func (rt *Runtime) nClearTimer(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) == 0 {
-		return goja.Undefined()
+func (rt *Runtime) nClearTimer(args []jit.Value) jit.Value {
+	if len(args) == 0 {
+		return jit.Undef()
 	}
-	rt.clearTimer(uint64(call.Argument(0).ToInteger()))
-	return goja.Undefined()
+	rt.clearTimer(uint64(argsAt(args, 0).ToInteger()))
+	return jit.Undef()
 }
 
-// nSetImmediate implements setImmediate.
-func (rt *Runtime) nSetImmediate(call goja.FunctionCall) goja.Value {
-	fn, ok := goja.AssertFunction(call.Argument(0))
-	if !ok {
-		panic(rt.vm.NewTypeError("callback must be a function"))
+// nSetImmediate implements global setImmediate.
+func (rt *Runtime) nSetImmediate(args []jit.Value) jit.Value {
+	fn := argsAt(args, 0)
+	if !fn.IsCallable() {
+		panic(jit.Err("TypeError", "callback must be a function"))
 	}
-	var args []goja.Value
-	if len(call.Arguments) > 1 {
-		args = call.Arguments[1:]
+	var extra []jit.Value
+	if len(args) > 1 {
+		extra = args[1:]
 	}
-	id := rt.addTimer(0, false, fn, goja.Undefined(), args)
-	return rt.vm.ToValue(id)
+	id := rt.addTimer(0, false, fn, jit.Undef(), extra)
+	return jit.Num(float64(id))
 }
 
-// nQueueMicrotask implements queueMicrotask.
-func (rt *Runtime) nQueueMicrotask(call goja.FunctionCall) goja.Value {
-	fn, ok := goja.AssertFunction(call.Argument(0))
-	if !ok {
-		panic(rt.vm.NewTypeError("callback must be a function"))
+// nQueueMicrotask implements global queueMicrotask.
+func (rt *Runtime) nQueueMicrotask(args []jit.Value) jit.Value {
+	fn := argsAt(args, 0)
+	if !fn.IsCallable() {
+		panic(jit.Err("TypeError", "callback must be a function"))
 	}
-	rt.pushMicrotask(func() {
-		if _, err := fn(goja.Undefined()); err != nil {
-			rt.reportUncaught(err)
-		}
-	})
-	return goja.Undefined()
+	id := rt.regCB(fn)
+	rt.pushMicrotask(func() { rt.invokeCB(id) })
+	return jit.Undef()
 }
 
 // nStructuredClone implements global structuredClone.
-func (rt *Runtime) nStructuredClone(call goja.FunctionCall) goja.Value {
-	v := call.Argument(0)
+func (rt *Runtime) nStructuredClone(args []jit.Value) jit.Value {
+	v := argsAt(args, 0)
 	raw, err := json.Marshal(v.Export())
 	if err != nil {
-		panic(rt.vm.NewGoError(err))
+		panic(rt.jsThrow(err))
 	}
 	var out any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		panic(rt.vm.NewGoError(err))
+		panic(rt.jsThrow(err))
 	}
 	return rt.toJS(out)
 }

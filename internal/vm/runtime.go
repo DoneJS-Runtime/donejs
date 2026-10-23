@@ -1,5 +1,5 @@
-// Package vm implements the donejs runtime: a goja-powered,
-// Node.js-API-compatible JavaScript runtime with a Go event loop.
+// Package vm implements the donejs runtime: a Node.js-API-compatible
+// JavaScript runtime built on the jit bytecode engine, with a Go event loop.
 package vm
 
 import (
@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // EngineVersion reports the engine version string.
-func EngineVersion() string { return gojaVersion }
+func EngineVersion() string { return engineName }
 
-const gojaVersion = "goja"
+const engineName = "jit"
 
 // Options configure a runtime instance.
 type Options struct {
@@ -31,7 +31,7 @@ type Options struct {
 // goroutine that calls Loop/Run; other goroutines hand work over
 // through Enqueue.
 type Runtime struct {
-	vm   *goja.Runtime
+	jit  *jit.VM
 	jobs chan func()
 
 	mu       sync.Mutex
@@ -46,16 +46,16 @@ type Runtime struct {
 	// jobs, matching the microtask queue semantics.
 	microtasks []func()
 
-	cbs    map[uint64]goja.Callable
+	cbs    map[uint64]jit.Value
 	nextCB uint64
 
 	modCache  map[string]*jsModule
-	progCache map[string]*goja.Program
+	progCache map[string]*jit.FuncProto
 
 	fds   map[int]*os.File
 	fdSeq int
 
-	natives map[string]goja.Value
+	natives map[string]jit.Value
 
 	argv     []string
 	mainFile string
@@ -63,39 +63,39 @@ type Runtime struct {
 
 	// mainModule is the entry module object (require.main); modStack holds
 	// the modules currently being evaluated so children can be linked.
-	mainModule goja.Value
-	modStack   []goja.Value
+	mainModule jit.Value
+	modStack   []jit.Value
 
 	allowExec  bool
 	execPolicy *execPolicy
 
 	http *httpState
 
-	processObj goja.Value
+	processObj jit.Value
 
 	// JS-side helpers captured at bootstrap
-	utilInspect goja.Callable
-	emitterNew  goja.Callable
-	uint8Maker  goja.Callable
+	utilInspect jit.Value
+	emitterNew  jit.Value
 
-	start          time.Time
+	start           time.Time
 	startSecondsVal float64
 }
 
 // New builds a bootstrapped runtime (JS globals installed, but no user code run).
 func New(opts Options) *Runtime {
 	rt := &Runtime{
-		vm:        goja.New(),
+		jit:       jit.NewVM(),
 		jobs:      make(chan func(), 1024),
 		timers:    map[uint64]*timerEntry{},
-		cbs:       map[uint64]goja.Callable{},
+		cbs:       map[uint64]jit.Value{},
 		modCache:  map[string]*jsModule{},
-		progCache: map[string]*goja.Program{},
+		progCache: map[string]*jit.FuncProto{},
 		fds:       map[int]*os.File{},
-		natives:   map[string]goja.Value{},
+		natives:   map[string]jit.Value{},
 		allowExec: opts.AllowExec || os.Getenv("DONEJS_ALLOW_EXEC") == "1",
 		start:     time.Now(),
 	}
+	rt.jit.SetOutput(func(s string) { os.Stdout.WriteString(s + "\n") })
 	rt.startSecondsVal = nowSeconds()
 	rt.execPolicy = &execPolicy{allowed: rt.allowExec, forced: os.Getenv("DONEJS_FORCE_EXEC") == "1"}
 	wd, err := os.Getwd()
@@ -151,8 +151,8 @@ func failCode(c int) int {
 	return c
 }
 
-// VMRaw exposes the underlying goja runtime for native modules.
-func (rt *Runtime) VMRaw() *goja.Runtime { return rt.vm }
+// VMRaw exposes the underlying engine VM for native modules.
+func (rt *Runtime) VMRaw() *jit.VM { return rt.jit }
 
 // Enqueue schedules fn to run on the JS thread.
 func (rt *Runtime) Enqueue(fn func()) {
@@ -189,13 +189,36 @@ func (rt *Runtime) exit(code int) {
 	rt.mu.Unlock()
 }
 
-func (rt *Runtime) bootstrapGlobals() {
-	vm := rt.vm
+// hostFunc is a callable host value that can also carry properties — the
+// shape require needs (require.resolve, require.cache).
+type hostFunc struct {
+	name  string
+	call  func(args []jit.Value) jit.Value
+	props map[string]jit.Value
+}
 
-	set := func(name string, fn func(goja.FunctionCall) goja.Value) {
-		if err := vm.Set(name, fn); err != nil {
-			panic(err)
-		}
+func (h *hostFunc) Call(args []jit.Value) jit.Value { return h.call(args) }
+
+func (h *hostFunc) Get(name string) jit.Value {
+	if v, ok := h.props[name]; ok {
+		return v
+	}
+	return jit.Undef()
+}
+
+func (h *hostFunc) Set(name string, v jit.Value) {
+	if h.props == nil {
+		h.props = map[string]jit.Value{}
+	}
+	h.props[name] = v
+}
+
+func (h *hostFunc) Str() string  { return "function " + h.name + "() { [native code] }" }
+func (h *hostFunc) Type() string { return "function" }
+
+func (rt *Runtime) bootstrapGlobals() {
+	set := func(name string, fn func(args []jit.Value) jit.Value) {
+		rt.jit.SetGlobal(name, jit.BuiltinFn(name, fn))
 	}
 	set("setTimeout", rt.nSetTimeout)
 	set("setInterval", rt.nSetInterval)
@@ -205,52 +228,51 @@ func (rt *Runtime) bootstrapGlobals() {
 	set("clearImmediate", rt.nClearTimer)
 	set("queueMicrotask", rt.nQueueMicrotask)
 	set("structuredClone", rt.nStructuredClone)
+	rt.registerURI()
 	// __donejsFlushTicks drains the process.nextTick queue. The entry module
 	// calls it at the end of its synchronous body so nextTick callbacks run
 	// before promise microtasks, like Node.
-	set("__donejsFlushTicks", func(call goja.FunctionCall) goja.Value {
+	set("__donejsFlushTicks", func(args []jit.Value) jit.Value {
 		rt.drainTicks()
-		return goja.Undefined()
+		return jit.Undef()
 	})
 
 	// Global require, so eval'd code and scripts can call it directly.
-	reqFn := func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(rt.vm.NewTypeError("require specifier required"))
+	req := &hostFunc{name: "require"}
+	req.call = func(args []jit.Value) jit.Value {
+		if len(args) == 0 {
+			panic(jit.Err("TypeError", "require specifier required"))
 		}
-		v, err := rt.requireFrom(rt.mainDir, call.Argument(0).String())
+		v, err := rt.requireFrom(rt.mainDir, argsAt(args, 0).String())
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		return v
 	}
-	reqVal := rt.vm.ToValue(reqFn)
-	if o, ok := reqVal.(*goja.Object); ok {
-		o.Set("resolve", func(call goja.FunctionCall) goja.Value {
-			spec := nodePrefix(call.Argument(0).String())
-			if isBuiltin(spec) || strings.HasPrefix(spec, "__") {
-				return rt.vm.ToValue(spec)
+	req.Set("resolve", jit.BuiltinFn("resolve", func(args []jit.Value) jit.Value {
+		spec := nodePrefix(argsAt(args, 0).String())
+		if isBuiltin(spec) || strings.HasPrefix(spec, "__") {
+			return jit.Str(spec)
+		}
+		if r, ok := rt.resolveFile(filepath.Join(rt.mainDir, spec)); ok {
+			return jit.Str(r)
+		}
+		w := rt.mainDir
+		for {
+			if r, ok := rt.resolveNodeModules(filepath.Join(w, "node_modules"), spec); ok {
+				return jit.Str(r)
 			}
-			if r, ok := rt.resolveFile(filepath.Join(rt.mainDir, spec)); ok {
-				return rt.vm.ToValue(r)
+			parent := filepath.Dir(w)
+			if parent == w {
+				break
 			}
-			w := rt.mainDir
-			for {
-				if r, ok := rt.resolveNodeModules(filepath.Join(w, "node_modules"), spec); ok {
-					return rt.vm.ToValue(r)
-				}
-				parent := filepath.Dir(w)
-				if parent == w {
-					break
-				}
-				w = parent
-			}
-			panic(rt.vm.NewGoError(fmt.Errorf("Cannot find module '%s'", spec)))
-		})
-		o.Set("cache", rt.moduleCacheObj())
-		o.Set("extensions", map[string]any{".js": ".js", ".json": ".json", ".node": ".node"})
-	}
-	vm.Set("require", reqVal)
+			w = parent
+		}
+		panic(jit.Err("Error", fmt.Sprintf("Cannot find module '%s'", spec)))
+	}))
+	req.Set("cache", rt.moduleCacheObj())
+	req.Set("extensions", jit.FromGo(map[string]any{".js": ".js", ".json": ".json", ".node": ".node"}))
+	rt.jit.SetGlobal("require", jit.Host(req))
 
 	// Run _bootstrap.js: installs console, process, Buffer, global glue.
 	if _, err := rt.runBuiltin("_bootstrap"); err != nil {
@@ -258,46 +280,35 @@ func (rt *Runtime) bootstrapGlobals() {
 	}
 
 	// util.inspect for Go-side formatting (console fallback)
-	if u, err := vm.RunString("require('util')"); err == nil {
-		obj := u.ToObject(vm)
-		if f, ok := goja.AssertFunction(obj.Get("inspect")); ok {
+	if u, err := rt.RunString("util-inspect", "require('util')"); err == nil {
+		if f := u.Get("inspect"); f.IsCallable() {
 			rt.utilInspect = f
 		}
 	}
-	if e, err := vm.RunString("require('events')"); err == nil {
-		ctor := e.ToObject(vm).Get("EventEmitter")
-		if f, ok := goja.AssertFunction(ctor); ok {
-			rt.emitterNew = f
-		}
-	}
-	if u, err := vm.RunString("(function(ab){ return new Uint8Array(ab); })"); err == nil {
-		if f, ok := goja.AssertFunction(u); ok {
-			rt.uint8Maker = f
+	if e, err := rt.RunString("events", "require('events')"); err == nil {
+		if ctor := e.Get("EventEmitter"); ctor.IsCallable() {
+			rt.emitterNew = ctor
 		}
 	}
 }
 
 // callMethod invokes obj.method(args...), returning (value, error).
-func callMethod(rt *Runtime, obj goja.Value, name string, args ...goja.Value) (goja.Value, error) {
-	o := obj.ToObject(rt.vm)
-	f, ok := goja.AssertFunction(o.Get(name))
-	if !ok {
-		return goja.Undefined(), fmt.Errorf("not a function: %s", name)
+func callMethod(rt *Runtime, obj jit.Value, name string, args ...jit.Value) (jit.Value, error) {
+	f := obj.Get(name)
+	if !f.IsCallable() {
+		return jit.Undef(), fmt.Errorf("not a function: %s", name)
 	}
-	return f(obj, args...)
+	return rt.jitCall(f, obj, args...)
+}
+
+// jitCall runs a JS function with an explicit receiver.
+func (rt *Runtime) jitCall(fn jit.Value, recv jit.Value, args ...jit.Value) (jit.Value, error) {
+	return rt.jit.CallBind(fn, recv, args...)
 }
 
 // newUint8Array wraps bytes in a JS Uint8Array so JS code can index them.
-func (rt *Runtime) newUint8Array(b []byte) goja.Value {
-	if rt.uint8Maker == nil {
-		return rt.vm.ToValue(rt.vm.NewArrayBuffer(b))
-	}
-	ab := rt.vm.ToValue(rt.vm.NewArrayBuffer(b))
-	v, err := rt.uint8Maker(goja.Undefined(), ab)
-	if err != nil {
-		panic(rt.vm.NewGoError(err))
-	}
-	return v
+func (rt *Runtime) newUint8Array(b []byte) jit.Value {
+	return jit.Uint8ArrayValue(b)
 }
 
 // formatErr renders an uncaught JS value like Node does.
@@ -307,15 +318,17 @@ func (rt *Runtime) formatErr(v any) string {
 		return "undefined"
 	case error:
 		return t.Error()
-	case goja.Value:
-		if goja.IsUndefined(t) {
+	case jit.Value:
+		if t.IsUndef() {
 			return "undefined"
 		}
-		if o, ok := t.(*goja.Object); ok {
-			if s, ok := goja.AssertFunction(o.Get("stack")); ok {
-				if sv, err := s(t); err == nil {
-					return sv.String()
-				}
+		if o := t.AsObj(); o != nil {
+			if stack := t.Get("stack"); !stack.IsUndef() {
+				return stack.String()
+			}
+			name := t.Get("name")
+			if !name.IsUndef() && name.String() != "" {
+				return name.String() + ": " + t.Get("message").String()
 			}
 		}
 		return t.String()
@@ -325,21 +338,20 @@ func (rt *Runtime) formatErr(v any) string {
 
 // makeRequire builds the CommonJS require function with Node-compatible
 // helper properties (resolve, cache, extensions).
-func (rt *Runtime) makeRequire(reqFn, resolveFn goja.Value) goja.Value {
-	f := rt.vm.ToValue(reqFn)
-	obj, ok := f.(*goja.Object)
-	if !ok {
-		return f
+func (rt *Runtime) makeRequire(reqFn, resolveFn jit.Value) jit.Value {
+	f := &hostFunc{name: "require"}
+	f.call = func(args []jit.Value) jit.Value {
+		return rt.jit.CallValue(reqFn, args)
 	}
-	obj.Set("resolve", resolveFn)
-	obj.Set("cache", rt.moduleCacheObj())
-	obj.Set("extensions", map[string]any{".js": ".js", ".json": ".json", ".node": ".node"})
-	if rt.mainModule != nil {
-		obj.Set("main", rt.mainModule)
+	f.Set("resolve", resolveFn)
+	f.Set("cache", rt.moduleCacheObj())
+	f.Set("extensions", jit.FromGo(map[string]any{".js": ".js", ".json": ".json", ".node": ".node"}))
+	if !rt.mainModule.IsUndef() {
+		f.Set("main", rt.mainModule)
 	} else {
-		obj.Set("main", goja.Undefined())
+		f.Set("main", jit.Undef())
 	}
-	return f
+	return jit.Host(f)
 }
 
 // modulePaths lists the node_modules directories visible from dir.
@@ -357,11 +369,11 @@ func (rt *Runtime) modulePaths(dir string) []any {
 }
 
 // moduleCacheObj exposes the module cache as a plain JS object.
-func (rt *Runtime) moduleCacheObj() *goja.Object {
-	o := rt.vm.NewObject()
+func (rt *Runtime) moduleCacheObj() jit.Value {
+	o := jit.Object()
 	rt.mu.Lock()
 	for k, m := range rt.modCache {
-		if m.exports != nil {
+		if !m.exports.IsUndef() {
 			o.Set(k, m.exports)
 		}
 	}
@@ -369,14 +381,14 @@ func (rt *Runtime) moduleCacheObj() *goja.Object {
 	return o
 }
 
-func (rt *Runtime) compile(name, src string) (*goja.Program, error) {
+func (rt *Runtime) compile(name, src string) (*jit.FuncProto, error) {
 	rt.mu.Lock()
 	if p, ok := rt.progCache[name]; ok {
 		rt.mu.Unlock()
 		return p, nil
 	}
 	rt.mu.Unlock()
-	p, err := goja.Compile(name, src, false)
+	p, err := jit.Compile(name, src)
 	if err != nil {
 		return nil, err
 	}
@@ -387,29 +399,22 @@ func (rt *Runtime) compile(name, src string) (*goja.Program, error) {
 }
 
 // RunString executes source on the JS thread (used by tests/tools).
-func (rt *Runtime) RunString(name, src string) (goja.Value, error) {
+func (rt *Runtime) RunString(name, src string) (jit.Value, error) {
 	p, err := rt.compile(name, src)
 	if err != nil {
-		return nil, err
+		return jit.Undef(), err
 	}
-	var out goja.Value
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				err = errors.New(rt.formatErr(toValue(rt.vm, r)))
-			}
-		}()
-		out, err = rt.vm.RunProgram(p)
-	}()
+	out, err := rt.jit.CallProtoErr(p)
 	if err != nil {
-		return nil, err
+		return jit.Undef(), errors.New(rt.formatErr(errToValue(err)))
 	}
 	return out, nil
 }
 
-func toValue(vm *goja.Runtime, v any) goja.Value {
-	if val, ok := v.(goja.Value); ok {
-		return val
+// errToValue unwraps a ThrowError into the JS value it carries.
+func errToValue(err error) jit.Value {
+	if te, ok := err.(*jit.ThrowError); ok {
+		return te.Value
 	}
-	return vm.ToValue(v)
+	return jit.ErrObj("Error", err.Error())
 }

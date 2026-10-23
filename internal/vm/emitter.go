@@ -1,11 +1,10 @@
 package vm
 
 import (
-	"reflect"
 	"sort"
 	"sync"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // goEmitter is a native EventEmitter. Native objects (sockets, requests,
@@ -15,22 +14,25 @@ type goEmitter struct {
 	mu        sync.Mutex
 	listeners map[string][]*goListener
 	max       int
+	nextID    uint64
 }
 
 type goListener struct {
-	fn       goja.Callable
-	once     bool
-	removed  bool
+	id      uint64
+	fn      jit.Value
+	once    bool
+	removed bool
 }
 
 func newGoEmitter() *goEmitter {
 	return &goEmitter{listeners: map[string][]*goListener{}, max: 10}
 }
 
-func (e *goEmitter) on(event string, fn goja.Callable, once bool, prepend bool) {
+func (e *goEmitter) on(event string, fn jit.Value, once bool, prepend bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	l := &goListener{fn: fn, once: once}
+	e.nextID++
+	l := &goListener{id: e.nextID, fn: fn, once: once}
 	if prepend {
 		e.listeners[event] = append([]*goListener{l}, e.listeners[event]...)
 	} else {
@@ -38,12 +40,12 @@ func (e *goEmitter) on(event string, fn goja.Callable, once bool, prepend bool) 
 	}
 }
 
-func (e *goEmitter) off(event string, fn goja.Callable) {
+func (e *goEmitter) off(event string, fn jit.Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	list := e.listeners[event]
 	for i, l := range list {
-		if sameCallable(l.fn, fn) {
+		if sameFn(l.fn, fn) {
 			l.removed = true
 			e.listeners[event] = append(list[:i], list[i+1:]...)
 			return
@@ -51,13 +53,8 @@ func (e *goEmitter) off(event string, fn goja.Callable) {
 	}
 }
 
-// sameCallable compares two Go function values by code pointer.
-func sameCallable(a, b goja.Callable) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
-}
+// sameFn compares two jit function values by identity.
+func sameFn(a, b jit.Value) bool { return a == b }
 
 func (e *goEmitter) removeAll(event string) {
 	e.mu.Lock()
@@ -67,6 +64,19 @@ func (e *goEmitter) removeAll(event string) {
 		return
 	}
 	delete(e.listeners, event)
+}
+
+func (e *goEmitter) removeID(event string, id uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	list := e.listeners[event]
+	for i, l := range list {
+		if l.id == id {
+			l.removed = true
+			e.listeners[event] = append(list[:i], list[i+1:]...)
+			return
+		}
+	}
 }
 
 func (e *goEmitter) count(event string) int {
@@ -87,7 +97,7 @@ func (e *goEmitter) names() []string {
 }
 
 // emit dispatches an event, returning true when a listener handled it.
-func (e *goEmitter) emit(rt *Runtime, this goja.Value, event string, args ...goja.Value) bool {
+func (e *goEmitter) emit(rt *Runtime, this jit.Value, event string, args ...jit.Value) bool {
 	e.mu.Lock()
 	list := append([]*goListener{}, e.listeners[event]...)
 	e.mu.Unlock()
@@ -99,9 +109,9 @@ func (e *goEmitter) emit(rt *Runtime, this goja.Value, event string, args ...goj
 			continue
 		}
 		if l.once {
-			e.off(event, l.fn)
+			e.removeID(event, l.id)
 		}
-		if _, err := l.fn(this, args...); err != nil {
+		if _, err := rt.jitCall(l.fn, this, args...); err != nil {
 			rt.reportUncaught(err)
 		}
 	}
@@ -110,79 +120,70 @@ func (e *goEmitter) emit(rt *Runtime, this goja.Value, event string, args ...goj
 
 // newEmitterObject builds a JS object exposing EventEmitter semantics,
 // backed by the native emitter.
-func (rt *Runtime) newEmitterObject() (*goja.Object, *goEmitter) {
+func (rt *Runtime) newEmitterObject() (jit.Value, *goEmitter) {
 	e := newGoEmitter()
-	obj := rt.vm.NewObject()
-	obj.Set("on", func(c goja.FunctionCall) goja.Value {
-		fn, ok := goja.AssertFunction(c.Argument(1))
-		if !ok {
-			panic(rt.vm.NewTypeError("listener must be a function"))
+	obj := jit.Object()
+	setFn(obj, "on", func(args []jit.Value) jit.Value {
+		fn := argsAt(args, 1)
+		if !fn.IsCallable() {
+			panic(jit.Err("TypeError", "listener must be a function"))
 		}
-		e.on(c.Argument(0).String(), fn, false, false)
+		e.on(argStr(args, 0), fn, false, false)
 		return obj
 	})
 	obj.Set("addListener", obj.Get("on"))
-	obj.Set("prependListener", func(c goja.FunctionCall) goja.Value {
-		fn, ok := goja.AssertFunction(c.Argument(1))
-		if !ok {
-			panic(rt.vm.NewTypeError("listener must be a function"))
+	obj.Set("prependListener", func(args []jit.Value) jit.Value {
+		fn := argsAt(args, 1)
+		if !fn.IsCallable() {
+			panic(jit.Err("TypeError", "listener must be a function"))
 		}
-		e.on(c.Argument(0).String(), fn, false, true)
+		e.on(argStr(args, 0), fn, false, true)
 		return obj
 	})
-	obj.Set("once", func(c goja.FunctionCall) goja.Value {
-		fn, ok := goja.AssertFunction(c.Argument(1))
-		if !ok {
-			panic(rt.vm.NewTypeError("listener must be a function"))
+	obj.Set("once", func(args []jit.Value) jit.Value {
+		fn := argsAt(args, 1)
+		if !fn.IsCallable() {
+			panic(jit.Err("TypeError", "listener must be a function"))
 		}
-		e.on(c.Argument(0).String(), fn, true, false)
+		e.on(argStr(args, 0), fn, true, false)
 		return obj
 	})
-	obj.Set("off", func(c goja.FunctionCall) goja.Value {
-		fn, ok := goja.AssertFunction(c.Argument(1))
-		if !ok {
-			panic(rt.vm.NewTypeError("listener must be a function"))
+	obj.Set("off", func(args []jit.Value) jit.Value {
+		fn := argsAt(args, 1)
+		if !fn.IsCallable() {
+			panic(jit.Err("TypeError", "listener must be a function"))
 		}
-		e.off(c.Argument(0).String(), fn)
+		e.off(argStr(args, 0), fn)
 		return obj
 	})
 	obj.Set("removeListener", obj.Get("off"))
-	obj.Set("removeAllListeners", func(c goja.FunctionCall) goja.Value {
-		e.removeAll(c.Argument(0).String())
+	obj.Set("removeAllListeners", func(args []jit.Value) jit.Value {
+		e.removeAll(argStr(args, 0))
 		return obj
 	})
-	obj.Set("emit", func(c goja.FunctionCall) goja.Value {
-		args := []goja.Value{}
-		if len(c.Arguments) > 1 {
-			args = c.Arguments[1:]
+	obj.Set("emit", func(args []jit.Value) jit.Value {
+		var evArgs []jit.Value
+		if len(args) > 1 {
+			evArgs = args[1:]
 		}
-		return rt.vm.ToValue(e.emit(rt, obj, c.Argument(0).String(), args...))
+		return jit.Bool(e.emit(rt, obj, argStr(args, 0), evArgs...))
 	})
-	obj.Set("listenerCount", func(c goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(e.count(c.Argument(0).String()))
+	obj.Set("listenerCount", func(args []jit.Value) jit.Value {
+		return jit.Num(float64(e.count(argStr(args, 0))))
 	})
-	obj.Set("listeners", func(c goja.FunctionCall) goja.Value {
-		return rt.vm.NewArray()
-	})
-	obj.Set("eventNames", func(c goja.FunctionCall) goja.Value {
-		names := e.names()
-		items := make([]interface{}, len(names))
-		for i, n := range names {
-			items[i] = n
-		}
-		return rt.vm.NewArray(items...)
-	})
-	obj.Set("setMaxListeners", func(c goja.FunctionCall) goja.Value {
-		e.max = int(c.Argument(0).ToInteger())
+	obj.Set("listeners", func(args []jit.Value) jit.Value { return jit.ArrOf() })
+	obj.Set("eventNames", func(args []jit.Value) jit.Value { return jit.FromGo(e.names()) })
+	obj.Set("setMaxListeners", func(args []jit.Value) jit.Value {
+		e.max = argInt(args, 0)
 		return obj
 	})
-	obj.Set("getMaxListeners", func(c goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(e.max)
+	obj.Set("getMaxListeners", func(args []jit.Value) jit.Value {
+		return jit.Num(float64(e.max))
 	})
 	return obj, e
 }
 
 // emitEvent dispatches an event on a native emitter object.
-func (rt *Runtime) emitEvent(obj *goja.Object, e *goEmitter, event string, args ...goja.Value) {
+func (rt *Runtime) emitEvent(obj jit.Value, e *goEmitter, event string, args ...jit.Value) {
 	e.emit(rt, obj, event, args...)
 }

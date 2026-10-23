@@ -19,8 +19,50 @@ const intl = require('__intl');
 
 let SUPP = null;
 function supp() {
-  if (SUPP === null) SUPP = JSON.parse(intl.sync('supplemental', []));
+  if (SUPP === null) SUPP = repairTree(JSON.parse(intl.sync('supplemental', [])));
   return SUPP;
+}
+
+// CLDR JSON can arrive double encoded (UTF-8 bytes read as Latin-1); restore
+// the intended characters before any of them are used as text.
+function repairCldr(s) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  let needs = false;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0x7f) { needs = true; break; }
+  }
+  if (!needs) return s;
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    const b = s.charCodeAt(i);
+    if (b < 0x80) { out += String.fromCharCode(b); i++; continue; }
+    if (b < 0xc0 || b > 0xf4) return s;
+    const len = b < 0xe0 ? 2 : b < 0xf0 ? 3 : 4;
+    if (i + len > s.length) return s;
+    let cp = b & (0xff >> len);
+    for (let j = 1; j < len; j++) {
+      const c = s.charCodeAt(i + j);
+      if (c < 0x80 || c > 0xbf) return s;
+      cp = (cp << 6) | (c & 0x3f);
+    }
+    if (cp > 0x10ffff) return s;
+    out += String.fromCodePoint(cp);
+    i += len;
+  }
+  return out;
+}
+
+function repairTree(v) {
+  if (typeof v === 'string') return repairCldr(v);
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) v[i] = repairTree(v[i]);
+    return v;
+  }
+  if (v && typeof v === 'object') {
+    for (const k in v) v[k] = repairTree(v[k]);
+    return v;
+  }
+  return v;
 }
 
 const RECORDS = new Map();
@@ -28,7 +70,7 @@ function record(tag) {
   let rec = RECORDS.get(tag);
   if (rec === undefined) {
     const raw = intl.sync('locale', [tag]);
-    rec = raw ? JSON.parse(raw) : null;
+    rec = raw ? repairTree(JSON.parse(raw)) : null;
     RECORDS.set(tag, rec);
   }
   return rec;
@@ -372,8 +414,8 @@ function roundingIncrementOption(value) {
   return n;
 }
 
-// expand "1.23e+21" into plain digits; goja's toFixed switches to exponential
-// past 1e21 and the group/decimal split needs a plain string.
+// expand "1.23e+21" into plain digits; the fixed-point formatter switches to
+// exponential past 1e21 and the group/decimal split needs a plain string.
 function expandExp(text) {
   const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(text);
   if (!m) return text;
@@ -512,10 +554,17 @@ function numberSymbols(b) {
 // locale does not override live under $supp._currencySymbols.
 function currencyEntry(b, code) {
   const local = (b.cs || {})[code];
-  if (Array.isArray(local)) return local;
   const root = supp()._currencySymbols || {};
   const base = root[code];
-  return Array.isArray(base) ? base : null;
+  if (!Array.isArray(base)) return Array.isArray(local) ? local : null;
+  if (!Array.isArray(local)) return base;
+  // The locale may name the currency without overriding its symbol; fall back
+  // to the root symbol (and any missing name) slot by slot.
+  const merged = base.slice();
+  for (let i = 0; i < local.length && i < merged.length; i++) {
+    if (local[i] !== null && local[i] !== undefined && local[i] !== '') merged[i] = local[i];
+  }
+  return merged;
 }
 
 function currencySymbol(b, code, display) {
@@ -1296,9 +1345,19 @@ class NumberFormat {
       patternText = this.sym.dsp;
       unitPatterns = b.u[this.unit] || null;
     }
+    // The CLDR currency pattern carries the ISO currency placeholder (U+00A4);
+    // render it as the resolved currency symbol. When the placeholder is absent
+    // (inherited patterns), prefix the symbol as ICU does.
+    if (this.style === 'currency' && !currencyName) {
+      const symWide = currencySymbol(b, this.currency, this.currencyDisplay);
+      if (patternText.indexOf('\u00a4') >= 0) {
+        patternText = patternText.split('\u00a4').join(symWide);
+      } else if (patternText.indexOf(symWide) < 0) {
+        patternText = symWide + patternText;
+      }
+    }
     const pattern = parseNumPattern(patternText);
-    const section = pattern.pos;
-    const f = {
+    const section = pattern.pos;    const f = {
       pattern,
       scale,
       sym: this.sym,
@@ -1443,10 +1502,25 @@ function fieldKey(f) {
   }
 }
 
+// ICU renders the narrow no-break space CLDR puts before day periods and era
+// markers as a plain space, so normalise it away here.
+function normalizeNBSP(text) {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x202f) { out += ' '; continue; }
+    if (c === 0xe2 && text.charCodeAt(i + 1) === 0x80 && text.charCodeAt(i + 2) === 0xaf) {
+      out += ' ';
+      i += 2;
+      continue;
+    }
+    out += text.charAt(i);
+  }
+  return out;
+}
+
 function parseDatePattern(text) {
-  // ICU renders the narrow no-break space CLDR puts before day periods and
-  // era markers as a plain space, so normalise it away here.
-  text = text.replace(/\u202f/g, ' ');
+  text = normalizeNBSP(text);
   const tokens = [];
   let i = 0;
   while (i < text.length) {
@@ -2163,9 +2237,7 @@ function dayPeriodText(b, width, hour) {
     || b.d.dap || ['AM', 'PM'];
   const text = hour < 12 ? list[0] : list[1];
   // ICU spells the narrow no-break space CLDR puts in day periods as a space.
-  if (typeof text === 'string' && text.indexOf('\u202f') >= 0) {
-    return text.replace(/\u202f/g, ' ');
-  }
+  if (typeof text === 'string') return normalizeNBSP(text);
   return text;
 }
 
@@ -2748,6 +2820,7 @@ function dtpgCandidates(b) {
   const index = {};
   const stdBases = {};
   const addEntry = (text, fields, spec) => {
+    text = normalizeNBSP(text);
     const base = canonicalSkeleton(fields);
     const key = base + '|' + skeletonKey(fields);
     const hit = index[key];

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 )
@@ -17,23 +17,23 @@ import (
 // CLDR plural rules or collate in multiple languages, so those live here; the
 // number and date formatters read the generated locale tables directly.
 func (rt *Runtime) registerIntl() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 	ops := opTable{
-		"locale":       func(a []goja.Value) (any, error) { return intlLocaleRecord(argStr(a, 0)), nil },
-		"hasLocale":    func(a []goja.Value) (any, error) { return intlHasLocale(argStr(a, 0)), nil },
-		"localeList":   func(a []goja.Value) (any, error) { return intlLocaleList(), nil },
-		"supplemental": func(a []goja.Value) (any, error) { return intlSupplementalText(), nil },
-		"catalog":      func(a []goja.Value) (any, error) { return intlCatalog(argStr(a, 0)), nil },
-		"canon":        func(a []goja.Value) (any, error) { return intlCanon(argStr(a, 0)), nil },
-		"tagInfo":      func(a []goja.Value) (any, error) { return intlTagInfo(argStr(a, 0)), nil },
-		"plural":       func(a []goja.Value) (any, error) { return intlPlural(a), nil },
-		"categories":   func(a []goja.Value) (any, error) { return intlCategories(a), nil },
-		"compare":      func(a []goja.Value) (any, error) { return intlCompare(a), nil },
-		"localZone":    func(a []goja.Value) (any, error) { return intlLocalZone(), nil },
-		"timeZone":     func(a []goja.Value) (any, error) { return intlTimeZone(argStr(a, 0)), nil },
-		"zoneOffset": func(a []goja.Value) (any, error) {
+		"locale":       func(a []jit.Value) (any, error) { return intlLocaleRecord(argStr(a, 0)), nil },
+		"hasLocale":    func(a []jit.Value) (any, error) { return intlHasLocale(argStr(a, 0)), nil },
+		"localeList":   func(a []jit.Value) (any, error) { return intlLocaleList(), nil },
+		"supplemental": func(a []jit.Value) (any, error) { return intlSupplementalText(), nil },
+		"catalog":      func(a []jit.Value) (any, error) { return intlCatalog(argStr(a, 0)), nil },
+		"canon":        func(a []jit.Value) (any, error) { return intlCanon(argStr(a, 0)), nil },
+		"tagInfo":      func(a []jit.Value) (any, error) { return intlTagInfo(argStr(a, 0)), nil },
+		"plural":       func(a []jit.Value) (any, error) { return intlPlural(a), nil },
+		"categories":   func(a []jit.Value) (any, error) { return intlCategories(a), nil },
+		"compare":      func(a []jit.Value) (any, error) { return intlCompare(a), nil },
+		"localZone":    func(a []jit.Value) (any, error) { return intlLocalZone(), nil },
+		"timeZone":     func(a []jit.Value) (any, error) { return intlTimeZone(argStr(a, 0)), nil },
+		"zoneOffset": func(a []jit.Value) (any, error) {
 			return intlZoneOffset(argStr(a, 0), int64(argNum(a, 1))), nil
-		},	}
+		}}
 	mod.Set("sync", rt.syncDispatch(ops))
 	rt.natives["__intl"] = mod
 }
@@ -174,7 +174,7 @@ func intlPluralRules(kind, lang string) ([]pluralCond, []string) {
 	return conds, cats
 }
 
-func intlPlural(a []goja.Value) string {
+func intlPlural(a []jit.Value) string {
 	lang := argStr(a, 0)
 	ops := pluralValue{
 		n: argsAt(a, 1).ToFloat(),
@@ -196,7 +196,7 @@ func intlPlural(a []goja.Value) string {
 	return intlSelectPlural(kind, lang, ops)
 }
 
-func intlCategories(a []goja.Value) []string {
+func intlCategories(a []jit.Value) []string {
 	lang := argStr(a, 0)
 	kind := argStr(a, 1)
 	if kind != "ordinal" {
@@ -469,7 +469,7 @@ func intlCollator(lang, sensitivity string, numeric bool) *collate.Collator {
 	return c
 }
 
-func intlCompare(a []goja.Value) int {
+func intlCompare(a []jit.Value) int {
 	lang := argStr(a, 0)
 	left := argStr(a, 1)
 	right := argStr(a, 2)

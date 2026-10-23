@@ -73,7 +73,7 @@ func main() {
 	}
 
 	if showVer {
-		fmt.Printf("donejs v%s (goja %s)\n", version, vm.EngineVersion())
+		fmt.Printf("donejs v%s (%s)\n", version, vm.EngineVersion())
 		return
 	}
 	if selftest {

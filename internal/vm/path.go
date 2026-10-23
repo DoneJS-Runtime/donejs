@@ -4,37 +4,37 @@ import (
 	"path"
 	"strings"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // registerPath exposes POSIX and Windows path semantics natively.
 func (rt *Runtime) registerPath() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
 	posix := opTable{
-		"normalize":  func(a []goja.Value) (any, error) { return path.Clean(argStr(a, 0)), nil },
-		"join":       func(a []goja.Value) (any, error) { return path.Join(stringsOf(a, 0)...), nil },
-		"resolve":    func(a []goja.Value) (any, error) { return pathResolve(a), nil },
-		"dirname":    func(a []goja.Value) (any, error) { return path.Dir(argStr(a, 0)), nil },
-		"basename":   func(a []goja.Value) (any, error) { return path.Base(argStr(a, 0)), nil },
-		"extname":    func(a []goja.Value) (any, error) { return path.Ext(argStr(a, 0)), nil },
-		"relative":   func(a []goja.Value) (any, error) { return pathRelative(a), nil },
-		"isAbsolute": func(a []goja.Value) (any, error) { return path.IsAbs(argStr(a, 0)), nil },
-		"format":     func(a []goja.Value) (any, error) { return pathFormat(argObj(a, 0)), nil },
-		"toNamespacedPath": func(a []goja.Value) (any, error) { return argStr(a, 0), nil },
+		"normalize":        func(a []jit.Value) (any, error) { return path.Clean(argStr(a, 0)), nil },
+		"join":             func(a []jit.Value) (any, error) { return path.Join(stringsOf(a, 0)...), nil },
+		"resolve":          func(a []jit.Value) (any, error) { return pathResolve(a), nil },
+		"dirname":          func(a []jit.Value) (any, error) { return path.Dir(argStr(a, 0)), nil },
+		"basename":         func(a []jit.Value) (any, error) { return path.Base(argStr(a, 0)), nil },
+		"extname":          func(a []jit.Value) (any, error) { return path.Ext(argStr(a, 0)), nil },
+		"relative":         func(a []jit.Value) (any, error) { return pathRelative(a), nil },
+		"isAbsolute":       func(a []jit.Value) (any, error) { return path.IsAbs(argStr(a, 0)), nil },
+		"format":           func(a []jit.Value) (any, error) { return pathFormat(argObj(a, 0)), nil },
+		"toNamespacedPath": func(a []jit.Value) (any, error) { return argStr(a, 0), nil },
 	}
 
 	win := opTable{
-		"normalize":  func(a []goja.Value) (any, error) { return winNormalize(argStr(a, 0)), nil },
-		"join":       func(a []goja.Value) (any, error) { return winJoin(stringsOf(a, 0)), nil },
-		"resolve":    func(a []goja.Value) (any, error) { return winResolve(stringsOf(a, 0)), nil },
-		"dirname":    func(a []goja.Value) (any, error) { return winDirname(argStr(a, 0)), nil },
-		"basename":   func(a []goja.Value) (any, error) { return winBase(argStr(a, 0)), nil },
-		"extname":    func(a []goja.Value) (any, error) { return winExtname(argStr(a, 0)), nil },
-		"relative":   func(a []goja.Value) (any, error) { return winRelative(argStr(a, 0), argStr(a, 1)), nil },
-		"isAbsolute": func(a []goja.Value) (any, error) { return winIsAbs(argStr(a, 0)), nil },
-		"format":     func(a []goja.Value) (any, error) { return pathFormat(argObj(a, 0)), nil },
-		"toNamespacedPath": func(a []goja.Value) (any, error) { return argStr(a, 0), nil },
+		"normalize":        func(a []jit.Value) (any, error) { return winNormalize(argStr(a, 0)), nil },
+		"join":             func(a []jit.Value) (any, error) { return winJoin(stringsOf(a, 0)), nil },
+		"resolve":          func(a []jit.Value) (any, error) { return winResolve(stringsOf(a, 0)), nil },
+		"dirname":          func(a []jit.Value) (any, error) { return winDirname(argStr(a, 0)), nil },
+		"basename":         func(a []jit.Value) (any, error) { return winBase(argStr(a, 0)), nil },
+		"extname":          func(a []jit.Value) (any, error) { return winExtname(argStr(a, 0)), nil },
+		"relative":         func(a []jit.Value) (any, error) { return winRelative(argStr(a, 0), argStr(a, 1)), nil },
+		"isAbsolute":       func(a []jit.Value) (any, error) { return winIsAbs(argStr(a, 0)), nil },
+		"format":           func(a []jit.Value) (any, error) { return pathFormat(argObj(a, 0)), nil },
+		"toNamespacedPath": func(a []jit.Value) (any, error) { return argStr(a, 0), nil },
 	}
 
 	mod.Set("posix", rt.syncDispatch(posix))
@@ -42,7 +42,7 @@ func (rt *Runtime) registerPath() {
 	rt.natives["__path"] = mod
 }
 
-func stringsOf(args []goja.Value, from int) []string {
+func stringsOf(args []jit.Value, from int) []string {
 	out := make([]string, 0, len(args)-from)
 	for i := from; i < len(args); i++ {
 		out = append(out, args[i].String())
@@ -50,7 +50,7 @@ func stringsOf(args []goja.Value, from int) []string {
 	return out
 }
 
-func pathResolve(args []goja.Value) string {
+func pathResolve(args []jit.Value) string {
 	if len(args) == 0 {
 		return ""
 	}
@@ -63,7 +63,7 @@ func pathResolve(args []goja.Value) string {
 	return path.Clean(path.Join(cwd, joined))
 }
 
-func pathRelative(args []goja.Value) string {
+func pathRelative(args []jit.Value) string {
 	from := argStr(args, 0)
 	to := argStr(args, 1)
 	if from == "" {
@@ -306,8 +306,8 @@ func pathRoot(p string) string {
 	return ""
 }
 
-func pathFormat(o *goja.Object) string {
-	if o == nil {
+func pathFormat(o jit.Value) string {
+	if o.IsUndef() {
 		return ""
 	}
 	dir := optStr(o, "dir", "")

@@ -1,9 +1,7 @@
 package vm
 
 import (
-	"strconv"
-
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // registerNatives installs the low-level native modules. Each native module
@@ -33,132 +31,110 @@ func (rt *Runtime) registerNatives() {
 	rt.registerIntl()
 }
 
-// opTable is a name -> implementation map for a native module.
-type opTable map[string]func(args []goja.Value) (any, error)
+// opTable is a name -> implementation map for a native module. An op receives
+// its parameters as values and returns a Go result (or an error to throw).
+type opTable map[string]func(args []jit.Value) (any, error)
 
-// syncDispatch exposes an op table as a single Go function.
-func (rt *Runtime) syncDispatch(table opTable) func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		args := arrayValues(call.Argument(1))
+// syncDispatch exposes an op table as a single callable: sync(name, params).
+func (rt *Runtime) syncDispatch(table opTable) jit.Value {
+	return jit.BuiltinFn("native", func(args []jit.Value) jit.Value {
+		name := argStr(args, 0)
 		op, ok := table[name]
 		if !ok {
-			panic(rt.vm.NewGoError(unknownOp(name)))
+			panic(jit.Err("Error", "unknown operation: "+name))
 		}
-		res, err := op(args)
+		res, err := op(values(argsAt(args, 1)))
 		if err != nil {
-			panic(rt.jsError(err))
+			panic(rt.jsThrow(err))
 		}
 		return rt.toJS(res)
-	}
+	})
 }
 
 // asyncDispatch runs an op off the JS thread and settles a Promise.
-func (rt *Runtime) asyncDispatch(table opTable) func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		args := arrayValues(call.Argument(1))
+func (rt *Runtime) asyncDispatch(table opTable) jit.Value {
+	return jit.BuiltinFn("native", func(args []jit.Value) jit.Value {
+		name := argStr(args, 0)
 		op, ok := table[name]
 		if !ok {
-			panic(rt.vm.NewGoError(unknownOp(name)))
+			panic(jit.Err("Error", "unknown operation: "+name))
 		}
-		return rt.goPromise(func() (any, error) { return op(args) })
-	}
+		params := values(argsAt(args, 1))
+		return rt.goPromise(func() (any, error) { return op(params) })
+	})
 }
 
-// arrayValues converts a JS array argument into a Go value slice.
-func arrayValues(v goja.Value) []goja.Value {
-	obj, ok := v.(*goja.Object)
-	if !ok {
-		return nil
-	}
-	n := int(obj.Get("length").ToInteger())
-	out := make([]goja.Value, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, obj.Get(strconv.Itoa(i)))
-	}
-	return out
-}
-
-type unknownOp string
-
-func (u unknownOp) Error() string { return "unknown operation: " + string(u) }
-
-// argsAt safely fetches argument i.
-func argsAt(args []goja.Value, i int) goja.Value {
-	if i < len(args) {
-		return args[i]
-	}
-	return goja.Null()
-}
-
-func argStr(args []goja.Value, i int) string {
-	v := argsAt(args, i)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
-		return ""
-	}
-	return v.String()
-}
-
-func argInt(args []goja.Value, i int) int {
-	v := argsAt(args, i)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
-		return 0
-	}
-	return int(v.ToInteger())
-}
-
-func argNum(args []goja.Value, i int) float64 {
-	v := argsAt(args, i)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
-		return 0
-	}
-	return v.ToFloat()
-}
-
-func argBool(args []goja.Value, i int) bool {
-	v := argsAt(args, i)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
-		return false
-	}
-	return v.ToBoolean()
-}
-
-func argObj(args []goja.Value, i int) *goja.Object {
-	if o, ok := argsAt(args, i).(*goja.Object); ok {
-		return o
+// values converts a JS array value into its element slice.
+func values(v jit.Value) []jit.Value {
+	if a := v.AsArr(); a != nil {
+		n := jit.ArrayLen(a)
+		out := make([]jit.Value, n)
+		for i := 0; i < n; i++ {
+			out[i] = jit.ArrayGet(a, i)
+		}
+		return out
 	}
 	return nil
 }
 
-func optBool(o *goja.Object, key string, def bool) bool {
-	if o == nil {
-		return def
+// argsAt safely fetches argument i.
+func argsAt(args []jit.Value, i int) jit.Value {
+	if i < len(args) {
+		return args[i]
 	}
+	return jit.Null()
+}
+
+func argStr(args []jit.Value, i int) string {
+	return argsAt(args, i).String()
+}
+
+func argInt(args []jit.Value, i int) int {
+	return int(argsAt(args, i).ToInteger())
+}
+
+func argNum(args []jit.Value, i int) float64 {
+	return argsAt(args, i).ToFloat()
+}
+
+func argBool(args []jit.Value, i int) bool {
+	return argsAt(args, i).ToBoolean()
+}
+
+// argObj returns argument i when it is an object, otherwise undefined, so
+// opt* helpers can read options objects without nil checks.
+func argObj(args []jit.Value, i int) jit.Value {
+	v := argsAt(args, i)
+	if v.IsObject() {
+		return v
+	}
+	return jit.Undef()
+}
+
+func optBool(o jit.Value, key string, def bool) bool {
 	v := o.Get(key)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+	if v.IsUndef() {
 		return def
 	}
 	return v.ToBoolean()
 }
 
-func optStr(o *goja.Object, key, def string) string {
-	if o == nil {
-		return def
-	}
+func optStr(o jit.Value, key, def string) string {
 	v := o.Get(key)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+	if v.IsUndef() {
 		return def
 	}
 	return v.String()
 }
 
-func optInt(o *goja.Object, key string, def int) int {
-	if o == nil {
-		return def
-	}
+// setFn attaches a Go function as a JS-callable property of an object value.
+func setFn(o jit.Value, name string, fn func(args []jit.Value) jit.Value) {
+	o.Set(name, jit.BuiltinFn(name, fn))
+}
+
+func optInt(o jit.Value, key string, def int) int {
 	v := o.Get(key)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+	if v.IsUndef() {
 		return def
 	}
 	return int(v.ToInteger())

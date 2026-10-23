@@ -3,13 +3,11 @@
 A Node.js-compatible JavaScript runtime written in Go.
 
 `donejs` speaks the Node.js API - `require()`, `fs`, `path`, `Buffer`, `http`,
-`stream`, `crypto`, `zlib`, `events`, ... - but the implementation is Go
-(ECMAScript execution via [goja](https://github.com/dop251/goja)) instead of
-V8 + libuv + JavaScript.
+`stream`, `crypto`, `zlib`, `events`, ... - and runs JavaScript on a from-scratch
+bytecode engine (`internal/jit/`) instead of V8 + libuv + JavaScript.
 
-A from-scratch bytecode compiler + interpreter for a JavaScript subset also
-lives in the tree (`internal/jit/`). It is not wired into the runtime yet - see
-[Experimental: bytecode engine](#experimental-bytecode-engine-internaljit).
+The from-scratch bytecode compiler + interpreter it executes lives in the tree
+(`internal/jit/`) - see [Bytecode engine](#bytecode-engine-internaljit).
 
 ```
 donejs script.js arg1 arg2
@@ -74,7 +72,7 @@ internal/vm/
   modules.go            CommonJS loader, module cache, native dispatch
   builtin/*.js          JavaScript layer of the built-in modules
   *.go                  native module implementations
-internal/jit/           experimental bytecode engine (self-contained JS subset)
+internal/jit/           the bytecode engine (self-contained JS engine)
   lexer.go  parser.go  ast.go   front end
   compiler.go          AST -> stack bytecode
   bytecode.go          instruction set + FuncProto
@@ -93,12 +91,12 @@ internal/jit/           experimental bytecode engine (self-contained JS subset)
   microtasks - exactly like Node. `queueMicrotask` uses a separate queue and
   therefore runs after promise jobs.
 
-## Experimental: bytecode engine (`internal/jit/`)
+## Bytecode engine (`internal/jit/`)
 
 `internal/jit/` is a self-contained JavaScript engine: lexer, recursive-descent
 parser, AST, stack bytecode compiler, and a bytecode interpreter. It reuses
-nothing from goja so the acceleration techniques can be tried on their own.
-The runtime still runs goja; this package is a standalone experiment.
+nothing outside the module so the acceleration techniques can be tried on their own.
+The runtime executes scripts through it; it is the only engine left.
 
 Design:
 
@@ -114,20 +112,21 @@ Design:
   function value itself, which is what makes recursion work without a global
   lookup.
 
-Benchmarks (`go test -run '^$' -bench . ./internal/jit/`, and the same scripts
-through goja and Node 26.11.0, on an i5-7400):
+Benchmarks (`go test -run '^$' -bench . ./internal/jit/`, against Node 26.11.0,
+on an i5-7400):
 
-| Benchmark | `internal/jit` | goja | V8 (Node) |
-| --- | --- | --- | --- |
-| `fib(25)` | **25.8 ms** | 43.6 ms | 1.03 ms |
-| `for (i < 1e6) s += i` | **97 ms** | 196 ms | 1.55 ms |
+| Benchmark | `internal/jit` | V8 (Node) |
+| --- | --- | --- |
+| `fib(25)` | **25.8 ms** | 1.03 ms |
+| `for (i < 1e6) s += i` | **97 ms** | 1.55 ms |
 
-The engine beats goja by 1.7x and 2x respectively. V8 stays far ahead - that
-gap is real JIT (Turbofan), which this interpreter deliberately does not do.
+The engine runs these benchmarks 20x slower than V8; that gap is real JIT
+(Turbofan), which this engine deliberately does not do.
 
-Known limits: it is a subset - no closures, classes, `try`/`catch`, generators,
-`async`, `with`, destructuring, spread, or template literals. Output goes
-through `print`/`console.log`.
+Known limits: the engine covers the syntax the runtime's builtins and selftest
+rely on - classes, private fields, generators, spread, template literals,
+`try`/`catch`, BigInt - but not async functions, and the host bridge is a tagged
+value model, not the full ES object model. Output goes through `print`/`console.log`.
 
 ## Security
 

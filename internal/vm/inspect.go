@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 const maxInspectDepth = 4
@@ -15,35 +15,34 @@ const maxInspectDepth = 4
 // registerInspect provides util.inspect / util.format in Go for speed and
 // Node-compatible output.
 func (rt *Runtime) registerInspect() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
-	mod.Set("inspect", func(call goja.FunctionCall) goja.Value {
-		v := call.Argument(0)
+	setFn(mod, "inspect", func(args []jit.Value) jit.Value {
+		v := argsAt(args, 0)
 		depth := -1
-		if len(call.Arguments) > 1 {
-			if o, ok := call.Argument(1).(*goja.Object); ok {
+		if len(args) > 1 {
+			if o := argObj(args, 1); !o.IsUndef() {
 				d := o.Get("depth")
-				if d != nil && !goja.IsUndefined(d) && !goja.IsNull(d) {
+				if !d.IsUndef() && !d.IsNull() {
 					depth = int(d.ToInteger())
 				}
 			}
 		}
-		return rt.vm.ToValue(rt.inspectValue(v, depth, make(map[uintptr]bool)))
+		return rt.toJS(rt.inspectValue(v, depth))
 	})
 
-	mod.Set("format", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(rt.formatArgs(call.Arguments))
+	setFn(mod, "format", func(args []jit.Value) jit.Value {
+		return rt.toJS(rt.formatArgs(args))
 	})
 
-	mod.Set("replacer", func(call goja.FunctionCall) goja.Value {
-		return goja.Undefined()
+	setFn(mod, "replacer", func(args []jit.Value) jit.Value {
+		return jit.Undef()
 	})
 
 	rt.natives["__inspect"] = mod
 }
 
-// formatArgs implements util.format.
-func (rt *Runtime) formatArgs(args []goja.Value) string {
+func (rt *Runtime) formatArgs(args []jit.Value) string {
 	if len(args) == 0 {
 		return ""
 	}
@@ -61,13 +60,13 @@ func (rt *Runtime) formatArgs(args []goja.Value) string {
 			parts = append(parts, s)
 			continue
 		}
-		parts = append(parts, rt.inspectValue(a, 2, make(map[uintptr]bool)))
+		parts = append(parts, rt.inspectValue(a, 2))
 	}
 	return strings.Join(parts, " ")
 }
 
 // formatWithPlaceholders implements %s/%d/%i/%f/%j/%o/%O/%% substitution.
-func (rt *Runtime) formatWithPlaceholders(f string, args []goja.Value) string {
+func (rt *Runtime) formatWithPlaceholders(f string, args []jit.Value) string {
 	var out strings.Builder
 	argIdx := 0
 	for i := 0; i < len(f); i++ {
@@ -117,7 +116,7 @@ func (rt *Runtime) formatWithPlaceholders(f string, args []goja.Value) string {
 					out.Write(b)
 				}
 			case 'o', 'O':
-				out.WriteString(rt.inspectValue(a, 4, make(map[uintptr]bool)))
+				out.WriteString(rt.inspectValue(a, 4))
 			case 'c':
 				// no CSS support; ignore
 			}
@@ -135,23 +134,26 @@ func (rt *Runtime) formatWithPlaceholders(f string, args []goja.Value) string {
 	return out.String()
 }
 
-func (rt *Runtime) formatArgString(a goja.Value) string {
+func (rt *Runtime) formatArgString(a jit.Value) string {
 	if s, ok := a.Export().(string); ok {
 		return s
 	}
-	return rt.inspectValue(a, 2, make(map[uintptr]bool))
+	return rt.inspectValue(a, 2)
 }
 
 // inspectValue renders a value the way Node's util.inspect does.
-func (rt *Runtime) inspectValue(v goja.Value, depth int, seen map[uintptr]bool) string {
-	if v == nil || goja.IsUndefined(v) {
+func (rt *Runtime) inspectValue(v jit.Value, depth int) string {
+	if v.IsUndef() {
 		return "undefined"
 	}
-	if goja.IsNull(v) {
+	if v.IsNull() {
 		return "null"
 	}
-	if o, ok := v.(*goja.Object); ok {
-		return rt.inspectObject(o, depth, seen)
+	if a := v.AsArr(); a != nil {
+		return rt.inspectArray(v, depth)
+	}
+	if o := v.AsObj(); o != nil {
+		return rt.inspectObject(v, depth)
 	}
 	switch t := v.Export().(type) {
 	case nil:
@@ -186,47 +188,46 @@ func (rt *Runtime) inspectBytes(b []byte) string {
 	return "Buffer[ " + strings.Join(parts, " ") + " ]"
 }
 
-func (rt *Runtime) inspectArray(a *goja.Object, depth int, seen map[uintptr]bool) string {
+func (rt *Runtime) inspectArray(a jit.Value, depth int) string {
 	if depth == 0 {
 		return "[Array]"
 	}
-	length := int(a.Get("length").ToInteger())
+	arr := a.AsArr()
+	length := jit.ArrayLen(arr)
 	parts := make([]string, 0, length)
 	for i := 0; i < length; i++ {
-		parts = append(parts, rt.inspectValue(a.Get(strconv.Itoa(i)), depth-1, seen))
+		parts = append(parts, rt.inspectValue(jit.ArrayGet(arr, i), depth-1))
 	}
 	return "[ " + strings.Join(parts, ", ") + " ]"
 }
 
-func (rt *Runtime) inspectObject(o *goja.Object, depth int, seen map[uintptr]bool) string {
-	if o.ClassName() == "Array" {
-		return rt.inspectArray(o, depth, seen)
+func (rt *Runtime) inspectObject(v jit.Value, depth int) string {
+	if v.AsArr() != nil {
+		return rt.inspectArray(v, depth)
 	}
 	// special cases first
-	if fn, ok := goja.AssertFunction(o.Get("inspect")); ok {
-		if v, err := fn(o); err == nil && v != nil {
-			if s, ok := v.Export().(string); ok {
+	if fn := v.Get("inspect"); fn.IsCallable() {
+		if res, err := rt.jitCall(fn, jit.Undef(), v); err == nil && !res.IsUndef() {
+			if s, ok := res.Export().(string); ok {
 				return s
 			}
 		}
 	}
 
 	ctorName := ""
-	if c := o.Get("constructor"); c != nil && !goja.IsUndefined(c) && !goja.IsNull(c) {
-		if co, ok := c.(*goja.Object); ok {
-			if n := co.Get("name"); n != nil && !goja.IsUndefined(n) {
-				ctorName = n.String()
-			}
+	if c := v.Get("constructor"); !c.IsUndef() && !c.IsNull() && c.AsObj() != nil {
+		if n := c.Get("name"); !n.IsUndef() {
+			ctorName = n.String()
 		}
 	}
 
 	switch ctorName {
 	case "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError":
-		return rt.inspectError(o)
+		return rt.inspectError(v)
 	case "Date":
-		return o.Get("toISOString").String()
+		return v.Get("toISOString").String()
 	case "RegExp":
-		return o.Get("toString").String()
+		return v.Get("toString").String()
 	}
 
 	if depth == 0 {
@@ -238,11 +239,11 @@ func (rt *Runtime) inspectObject(o *goja.Object, depth int, seen map[uintptr]boo
 
 	// Node keeps the insertion order of the keys and breaks long objects
 	// over several lines.
-	keys := o.Keys()
+	keys := v.Keys()
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		val := o.Get(k)
-		parts = append(parts, k+": "+rt.inspectValue(val, depth-1, seen))
+		val := v.Get(k)
+		parts = append(parts, k+": "+rt.inspectValue(val, depth-1))
 	}
 	var body string
 	switch {
@@ -271,13 +272,13 @@ func (rt *Runtime) inspectObject(o *goja.Object, depth int, seen map[uintptr]boo
 	return body
 }
 
-func (rt *Runtime) inspectError(o *goja.Object) string {
+func (rt *Runtime) inspectError(v jit.Value) string {
 	name := "Error"
-	if n := o.Get("name"); n != nil && !goja.IsUndefined(n) {
+	if n := v.Get("name"); !n.IsUndef() {
 		name = n.String()
 	}
 	msg := ""
-	if m := o.Get("message"); m != nil && !goja.IsUndefined(m) {
+	if m := v.Get("message"); !m.IsUndef() {
 		msg = m.String()
 	}
 	if msg == "" {
@@ -358,74 +359,69 @@ func quoteOne(s string) string {
 
 // registerUtilDeep provides util.isDeepStrictEqual.
 func (rt *Runtime) registerUtilDeep() {
-	mod := rt.vm.NewObject()
-	mod.Set("isDeepStrictEqual", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(deepEqual(call.Argument(0), call.Argument(1), 0))
+	mod := jit.Object()
+	setFn(mod, "isDeepStrictEqual", func(args []jit.Value) jit.Value {
+		return rt.toJS(deepEqual(argsAt(args, 0), argsAt(args, 1), 0))
 	})
 	rt.natives["__util"] = mod
 }
 
-func deepEqual(a, b goja.Value, depth int) bool {
-	if depth > 100 {
+func deepEqual(a, b jit.Value, depth int) bool {	if depth > 100 {
 		return false
 	}
-	if a == nil || b == nil {
-		return goja.IsUndefined(a) && goja.IsUndefined(b)
+	if a.IsUndef() || b.IsUndef() {
+		return a.IsUndef() && b.IsUndef()
 	}
-	if goja.IsUndefined(a) || goja.IsUndefined(b) {
-		return goja.IsUndefined(a) && goja.IsUndefined(b)
+	if a.IsNull() || b.IsNull() {
+		return a.IsNull() && b.IsNull()
 	}
-	if goja.IsNull(a) || goja.IsNull(b) {
-		return goja.IsNull(a) && goja.IsNull(b)
-	}
-	ao, aIsObj := a.(*goja.Object)
-	bo, bIsObj := b.(*goja.Object)
-	if !aIsObj || !bIsObj {
-		return a.Export() == b.Export()
+	ao := a.AsObj()
+	bo := b.AsObj()
+	if (ao == nil || bo == nil) && a.AsArr() == nil && b.AsArr() == nil {
+		// Primitives (and values without a plain-object shape) compare without
+		// touching Export: slices are not comparable with ==.
+		return deepEqualExport(a, b)
 	}
 	// typed arrays / array buffers compare by bytes
-	if ab, ok := a.Export().(goja.ArrayBuffer); ok {
-		bb, ok2 := b.Export().(goja.ArrayBuffer)
+	if ab, ok := a.Export().([]byte); ok {
+		bb, ok2 := b.Export().([]byte)
 		if !ok2 {
 			return false
 		}
-		return reflect.DeepEqual(ab.Bytes(), bb.Bytes())
-	}
-	if au, ok := a.Export().([]byte); ok {
-		bu, ok2 := b.Export().([]byte)
-		if !ok2 {
-			return false
-		}
-		return reflect.DeepEqual(au, bu)
+		return reflect.DeepEqual(ab, bb)
 	}
 	// dates
-	if ao.Get("toISOString") != nil && bo.Get("toISOString") != nil {
-		aISO := ao.Get("toISOString").String()
-		bISO := bo.Get("toISOString").String()
+	if !a.Get("toISOString").IsUndef() && !b.Get("toISOString").IsUndef() {
+		aISO := a.Get("toISOString").String()
+		bISO := b.Get("toISOString").String()
 		if aISO != "" && bISO != "" && aISO == bISO {
 			return true
 		}
 	}
 	// arrays
-	if ao.ClassName() == "Array" || bo.ClassName() == "Array" {
-		if ao.ClassName() != bo.ClassName() {
+	arrA := a.AsArr() != nil
+	arrB := b.AsArr() != nil
+	if arrA || arrB {
+		if arrA != arrB {
 			return false
 		}
-		al := int(ao.Get("length").ToInteger())
-		bl := int(bo.Get("length").ToInteger())
+		arrAObj := a.AsArr()
+		arrBObj := b.AsArr()
+		al := jit.ArrayLen(arrAObj)
+		bl := jit.ArrayLen(arrBObj)
 		if al != bl {
 			return false
 		}
 		for i := 0; i < al; i++ {
-			if !deepEqual(ao.Get(strconv.Itoa(i)), bo.Get(strconv.Itoa(i)), depth+1) {
+			if !deepEqual(jit.ArrayGet(arrAObj, i), jit.ArrayGet(arrBObj, i), depth+1) {
 				return false
 			}
 		}
 		return true
 	}
 	// plain objects
-	ak := ao.Keys()
-	bk := bo.Keys()
+	ak := a.Keys()
+	bk := b.Keys()
 	if len(ak) != len(bk) {
 		return false
 	}
@@ -435,9 +431,41 @@ func deepEqual(a, b goja.Value, depth int) bool {
 		if ak[i] != bk[i] {
 			return false
 		}
-		if !deepEqual(ao.Get(ak[i]), bo.Get(bk[i]), depth+1) {
+		if !deepEqual(a.Get(ak[i]), b.Get(bk[i]), depth+1) {
 			return false
 		}
 	}
 	return true
+}
+
+// deepEqualExport compares values that have no plain-object shape — primitives,
+// arrays, maps — without using Go's ==, which panics on slices.
+func deepEqualExport(a, b jit.Value) bool {
+	if a.IsUndef() || b.IsUndef() {
+		return a.IsUndef() && b.IsUndef()
+	}
+	if a.IsNull() || b.IsNull() {
+		return a.IsNull() && b.IsNull()
+	}
+	switch {
+	case a.IsBool() && b.IsBool():
+		return a.AsBool() == b.AsBool()
+	case a.IsNum() && b.IsNum():
+		return a.AsNum() == b.AsNum()
+	case a.IsStr() && b.IsStr():
+		return a.AsStr() == b.AsStr()
+	case a.AsArr() != nil && b.AsArr() != nil:
+		al := jit.ArrayLen(a.AsArr())
+		bl := jit.ArrayLen(b.AsArr())
+		if al != bl {
+			return false
+		}
+		for i := 0; i < al; i++ {
+			if !deepEqualExport(jit.ArrayGet(a.AsArr(), i), jit.ArrayGet(b.AsArr(), i)) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

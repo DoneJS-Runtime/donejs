@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerProcess() {
-	p := rt.vm.NewObject()
+	p := jit.Object()
 
 	argv := make([]any, 0, len(rt.argv))
 	for _, a := range rt.argv {
@@ -38,79 +38,79 @@ func (rt *Runtime) registerProcess() {
 	p.Set("env", env)
 
 	versions := map[string]any{
-		"node":     "22.0.0",
-		"donejs":   "0.1.0",
-		"goja":     "0.0.0",
-		"v8":       "",
-		"uv":       "",
-		"modules":  "26",
-		"napi":     "9",
-		"acorn":    "8.11.3",
-		"openssl":  "3.0.0",
+		"node":    "22.0.0",
+		"donejs":  "0.1.0",
+		"jit":     EngineVersion(),
+		"v8":      "",
+		"uv":      "",
+		"modules": "26",
+		"napi":    "9",
+		"acorn":   "8.11.3",
+		"openssl": "3.0.0",
 	}
 	p.Set("versions", versions)
 
-	p.Set("cwd", func(call goja.FunctionCall) goja.Value {
+	setFn(p, "cwd", func(args []jit.Value) jit.Value {
 		d, err := os.Getwd()
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
-		return rt.vm.ToValue(d)
+		return jit.Str(d)
 	})
-	p.Set("chdir", func(call goja.FunctionCall) goja.Value {
-		if err := os.Chdir(call.Argument(0).String()); err != nil {
-			panic(rt.vm.NewGoError(err))
+	setFn(p, "chdir", func(args []jit.Value) jit.Value {
+		if err := os.Chdir(argStr(args, 0)); err != nil {
+			panic(rt.jsThrow(err))
 		}
-		return goja.Undefined()
+		return jit.Undef()
 	})
-	p.Set("exit", func(call goja.FunctionCall) goja.Value {
+	setFn(p, "exit", func(args []jit.Value) jit.Value {
 		code := 0
-		if len(call.Arguments) > 0 {
-			code = int(call.Argument(0).ToInteger())
+		if len(args) > 0 {
+			code = int(argInt(args, 0))
 		}
 		rt.exit(code)
-		return goja.Undefined()
+		return jit.Undef()
 	})
-	p.Set("exitCode", goja.Undefined())
-	p.Set("nextTick", func(call goja.FunctionCall) goja.Value {
-		fn, ok := goja.AssertFunction(call.Argument(0))
-		if !ok {
-			panic(rt.vm.NewTypeError("callback must be a function"))
+	p.Set("exitCode", jit.Undef())
+	setFn(p, "nextTick", func(args []jit.Value) jit.Value {
+		fn := argsAt(args, 0)
+		if !fn.IsCallable() {
+			panic(jit.Err("TypeError", "callback must be a function"))
 		}
-		var args []goja.Value
-		if len(call.Arguments) > 1 {
-			args = call.Arguments[1:]
+		var cbArgs []jit.Value
+		if len(args) > 1 {
+			cbArgs = args[1:]
 		}
-		rt.pushTick(func() {
-			if _, err := fn(goja.Undefined(), args...); err != nil {
-				rt.reportUncaught(err)
-			}
-		})
-		return goja.Undefined()
+		id := rt.regCB(fn)
+		rt.pushTick(func() { rt.invokeCB(id, cbArgs...) })
+		return jit.Undef()
 	})
-	p.Set("hrtime", func(call goja.FunctionCall) goja.Value {
+	setFn(p, "hrtime", func(args []jit.Value) jit.Value {
 		d := time.Since(rt.start)
-		return rt.vm.ToValue([]int64{d.Nanoseconds() / 1e9, int64(d.Nanoseconds() % 1e9)})
+		return jit.ArrOf(
+			jit.Num(float64(d.Nanoseconds()/1e9)),
+			jit.Num(float64(d.Nanoseconds()%1e9)),
+		)
 	})
-	p.Set("uptime", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(nowSeconds() - rt.startSeconds())
+	setFn(p, "uptime", func(args []jit.Value) jit.Value {
+		return jit.Num(nowSeconds() - rt.startSeconds())
 	})
-	p.Set("memoryUsage", func(call goja.FunctionCall) goja.Value {
+	setFn(p, "memoryUsage", func(args []jit.Value) jit.Value {
 		m := memStats()
 		return rt.toJS(map[string]any{
-			"rss":     int64(m.Sys),
-			"heapTotal": int64(m.HeapSys),
-			"heapUsed":  int64(m.HeapAlloc),
-			"external":  int64(m.Sys - m.HeapSys),
+			"rss":          int64(m.Sys),
+			"heapTotal":    int64(m.HeapSys),
+			"heapUsed":     int64(m.HeapAlloc),
+			"external":     int64(m.Sys - m.HeapSys),
 			"arrayBuffers": int64(0),
 		})
 	})
-	p.Set("umask", func(call goja.FunctionCall) goja.Value { return rt.vm.ToValue(0o022) })
-	p.Set("kill", func(call goja.FunctionCall) goja.Value {
-		pid := int(call.Argument(0).ToInteger())
+	setFn(p, "umask", func(args []jit.Value) jit.Value { return jit.Num(0o022) })
+	setFn(p, "kill", func(args []jit.Value) jit.Value {
+		pid := int(argInt(args, 0))
 		sig := "SIGTERM"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			sig = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			sig = argStr(args, 1)
 		}
 		s, err := strconv.Atoi(strings.TrimPrefix(sig, "SIG"))
 		if err != nil {
@@ -118,53 +118,51 @@ func (rt *Runtime) registerProcess() {
 		}
 		if pid == os.Getpid() {
 			rt.exit(0)
-			return rt.vm.ToValue(true)
+			return jit.Bool(true)
 		}
 		if err := syscall.Kill(pid, syscall.Signal(s)); err != nil {
-			return rt.vm.ToValue(false)
+			return jit.Bool(false)
 		}
-		return rt.vm.ToValue(true)
+		return jit.Bool(true)
 	})
-	p.Set("emitWarning", func(call goja.FunctionCall) goja.Value { return goja.Undefined() })
-	p.Set("binding", func(call goja.FunctionCall) goja.Value {
-		panic(rt.vm.NewGoError(errUnsupported("process.binding")))
+	setFn(p, "emitWarning", func(args []jit.Value) jit.Value { return jit.Undef() })
+	setFn(p, "binding", func(args []jit.Value) jit.Value {
+		panic(rt.jsThrow(errUnsupported("process.binding")))
 	})
-	p.Set("dlopen", func(call goja.FunctionCall) goja.Value {
-		panic(rt.vm.NewGoError(errUnsupported("process.dlopen")))
+	setFn(p, "dlopen", func(args []jit.Value) jit.Value {
+		panic(rt.jsThrow(errUnsupported("process.dlopen")))
 	})
 
 	// stdio
-	stdout := rt.vm.NewObject()
-	stdout.Set("write", func(call goja.FunctionCall) goja.Value {
-		s := call.Argument(0).String()
+	stdout := jit.Object()
+	setFn(stdout, "write", func(args []jit.Value) jit.Value {
+		s := argStr(args, 0)
 		os.Stdout.WriteString(s)
-		if cb, ok := splitCB(call); ok {
-			f, _ := goja.AssertFunction(cb)
-			f(goja.Undefined(), goja.Null(), rt.vm.ToValue(len(s)))
+		if cb, ok := splitCB(args); ok {
+			rt.jitCall(cb, jit.Undef(), jit.Null(), jit.Num(float64(len(s))))
 		}
-		return rt.vm.ToValue(true)
+		return jit.Bool(true)
 	})
 	stdout.Set("isTTY", isTTY(os.Stdout))
 	stdout.Set("fd", 1)
 	stdout.Set("writable", true)
-	stdout.Set("end", func(call goja.FunctionCall) goja.Value { return rt.vm.ToValue(true) })
-	stderr := rt.vm.NewObject()
-	stderr.Set("write", func(call goja.FunctionCall) goja.Value {
-		s := call.Argument(0).String()
+	setFn(stdout, "end", func(args []jit.Value) jit.Value { return jit.Bool(true) })
+	stderr := jit.Object()
+	setFn(stderr, "write", func(args []jit.Value) jit.Value {
+		s := argStr(args, 0)
 		os.Stderr.WriteString(s)
-		return rt.vm.ToValue(true)
+		return jit.Bool(true)
 	})
 	stderr.Set("isTTY", isTTY(os.Stderr))
 	stderr.Set("fd", 2)
 	stderr.Set("writable", true)
-	stderr.Set("end", func(call goja.FunctionCall) goja.Value { return rt.vm.ToValue(true) })
-	stdin := rt.vm.NewObject()
+	stdin := jit.Object()
 	stdin.Set("isTTY", isTTY(os.Stdin))
 	stdin.Set("fd", 0)
-	stdin.Set("read", func(call goja.FunctionCall) goja.Value { return goja.Null() })
-	stdin.Set("setEncoding", func(call goja.FunctionCall) goja.Value { return goja.Undefined() })
-	stdin.Set("resume", func(call goja.FunctionCall) goja.Value { return goja.Undefined() })
-	stdin.Set("pause", func(call goja.FunctionCall) goja.Value { return goja.Undefined() })
+	setFn(stdin, "read", func(args []jit.Value) jit.Value { return jit.Null() })
+	setFn(stdin, "setEncoding", func(args []jit.Value) jit.Value { return jit.Undef() })
+	setFn(stdin, "resume", func(args []jit.Value) jit.Value { return jit.Undef() })
+	setFn(stdin, "pause", func(args []jit.Value) jit.Value { return jit.Undef() })
 	p.Set("stdout", stdout)
 	p.Set("stderr", stderr)
 	p.Set("stdin", stdin)
@@ -251,18 +249,25 @@ func (rt *Runtime) pushMicrotask(fn func()) {
 	rt.Enqueue(func() {}) // wake the loop
 }
 
-// drainMicrotasks runs queued queueMicrotask callbacks.
+// drainMicrotasks runs the engine's microtask queue (promise reactions) and
+// the runtime's queueMicrotask callbacks, promise jobs first as Node does.
 func (rt *Runtime) drainMicrotasks() {
 	for {
-		rt.mu.Lock()
-		if len(rt.microtasks) == 0 {
-			rt.mu.Unlock()
-			return
+		if rt.jit.HasJobs() {
+			rt.jit.RunJobs()
+			continue
 		}
-		fn := rt.microtasks[0]
-		rt.microtasks = rt.microtasks[1:]
+		rt.mu.Lock()
+		more := len(rt.microtasks) > 0
+		if more {
+			fn := rt.microtasks[0]
+			rt.microtasks = rt.microtasks[1:]
+			rt.mu.Unlock()
+			fn()
+			continue
+		}
 		rt.mu.Unlock()
-		fn()
+		return
 	}
 }
 

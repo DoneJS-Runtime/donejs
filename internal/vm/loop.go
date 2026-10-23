@@ -4,19 +4,19 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 type timerEntry struct {
 	id       uint64
 	when     time.Time
 	interval time.Duration // 0 => one-shot
-	fn       goja.Callable
-	this     goja.Value
-	args     []goja.Value
+	fn       jit.Value
+	this     jit.Value
+	args     []jit.Value
 }
 
-func (rt *Runtime) addTimer(delay time.Duration, interval bool, fn goja.Callable, this goja.Value, args []goja.Value) uint64 {
+func (rt *Runtime) addTimer(delay time.Duration, interval bool, fn jit.Value, this jit.Value, args []jit.Value) uint64 {
 	if delay < 0 {
 		delay = 0
 	}
@@ -48,7 +48,8 @@ func (rt *Runtime) nextDeadline() (time.Time, bool) {
 	)
 	for _, t := range rt.timers {
 		if !ok || t.when.Before(best) {
-			best, ok = t.when, true
+			best = t.when
+			ok = true
 		}
 	}
 	return best, ok
@@ -85,7 +86,7 @@ func (rt *Runtime) fireDueTimers() {
 			if rt.exitingNow() {
 				return
 			}
-			if _, err := t.fn(t.this, t.args...); err != nil {
+			if _, err := rt.jitCall(t.fn, t.this, t.args...); err != nil {
 				rt.reportUncaught(err)
 			}
 		}
@@ -136,7 +137,7 @@ func (rt *Runtime) Loop() (code int) {
 		inflight := rt.pending
 		rt.mu.Unlock()
 
-		if pending == 0 && handles == 0 && inflight == 0 && !hasTimer {
+		if pending == 0 && handles == 0 && inflight == 0 && !hasTimer && !rt.jit.HasJobs() {
 			return rt.currentExit()
 		}
 		if hasTimer {
@@ -165,11 +166,9 @@ func (rt *Runtime) currentExit() int {
 		return rt.exitCode
 	}
 	// process.exitCode may have been set from JS.
-	if o, ok := rt.processObj.(*goja.Object); ok {
-		if v := o.Get("exitCode"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
-			if n := int(v.ToInteger()); n != 0 {
-				return n
-			}
+	if v := rt.processObj.Get("exitCode"); !v.IsUndef() && !v.IsNull() {
+		if n := int(v.ToInteger()); n != 0 {
+			return n
 		}
 	}
 	return rt.exitCode

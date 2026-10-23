@@ -1,10 +1,8 @@
 package vm
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -16,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // httpState keeps live servers and sockets alive for the event loop.
@@ -43,31 +41,31 @@ func (rt *Runtime) httpState() *httpState {
 }
 
 func (rt *Runtime) registerHTTP() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
-	mod.Set("createServer", func(call goja.FunctionCall) goja.Value {
-		handler, ok := goja.AssertFunction(call.Argument(0))
-		if !ok {
-			panic(rt.vm.NewTypeError("requestListener must be a function"))
+	setFn(mod, "createServer", func(args []jit.Value) jit.Value {
+		handler := argsAt(args, 0)
+		if !handler.IsCallable() {
+			panic(jit.Err("TypeError", "requestListener must be a function"))
 		}
-		opts := argObj([]goja.Value{call.Argument(1)}, 0)
+		opts := argObj(args, 1)
 		return rt.newServerObject(handler, opts, nil)
 	})
 
-	mod.Set("createSecureServer", func(call goja.FunctionCall) goja.Value {
-		handler, ok := goja.AssertFunction(call.Argument(0))
-		if !ok {
-			panic(rt.vm.NewTypeError("requestListener must be a function"))
+	setFn(mod, "createSecureServer", func(args []jit.Value) jit.Value {
+		handler := argsAt(args, 0)
+		if !handler.IsCallable() {
+			panic(jit.Err("TypeError", "requestListener must be a function"))
 		}
-		opts := argObj([]goja.Value{call.Argument(1)}, 0)
+		opts := argObj(args, 1)
 		certPath := optStr(opts, "cert", "")
 		keyPath := optStr(opts, "key", "")
 		if certPath == "" || keyPath == "" {
-			panic(rt.vm.NewGoError(errors.New("https.createServer requires 'cert' and 'key'")))
+			panic(rt.jsThrow(errors.New("https.createServer requires 'cert' and 'key'")))
 		}
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
 		if ca := optStr(opts, "ca", ""); ca != "" {
@@ -81,29 +79,29 @@ func (rt *Runtime) registerHTTP() {
 		return rt.newServerObject(handler, opts, tlsCfg)
 	})
 
-	mod.Set("request", func(call goja.FunctionCall) goja.Value {
-		opts := argObj([]goja.Value{call.Argument(0)}, 0)
-		cb, hasCB := splitCB(call)
+	setFn(mod, "request", func(args []jit.Value) jit.Value {
+		opts := argObj(args, 0)
+		cb, hasCB := splitCB(args)
 		if !hasCB {
-			panic(rt.vm.NewTypeError("callback required"))
+			panic(jit.Err("TypeError", "callback required"))
 		}
 		return rt.httpRequest(opts, cb, false)
 	})
 
-	mod.Set("get", func(call goja.FunctionCall) goja.Value {
-		opts := argObj([]goja.Value{call.Argument(0)}, 0)
-		cb, hasCB := splitCB(call)
+	setFn(mod, "get", func(args []jit.Value) jit.Value {
+		opts := argObj(args, 0)
+		cb, hasCB := splitCB(args)
 		if !hasCB {
-			panic(rt.vm.NewTypeError("callback required"))
+			panic(jit.Err("TypeError", "callback required"))
 		}
-		if opts == nil {
-			opts = rt.vm.NewObject()
+		if opts.IsUndef() {
+			opts = jit.Object()
 		}
 		opts.Set("method", "GET")
 		return rt.httpRequest(opts, cb, false)
 	})
 
-	mod.Set("globalAgent", rt.vm.NewObject())
+	mod.Set("globalAgent", jit.Object())
 	mod.Set("maxHeaderSize", 16384)
 
 	rt.natives["__http"] = mod
@@ -111,13 +109,13 @@ func (rt *Runtime) registerHTTP() {
 }
 
 // newServerObject builds the native server handle exposed to JS.
-func (rt *Runtime) newServerObject(handler goja.Callable, opts *goja.Object, tlsCfg *tls.Config) goja.Value {
+func (rt *Runtime) newServerObject(handler jit.Value, opts jit.Value, tlsCfg *tls.Config) jit.Value {
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rt.serveHTTP(handler, w, r)
 		}),
 	}
-	if opts != nil {
+	if !opts.IsUndef() {
 		if to := optInt(opts, "timeout", 0); to > 0 {
 			srv.ReadTimeout = time.Duration(to) * time.Millisecond
 		}
@@ -130,28 +128,28 @@ func (rt *Runtime) newServerObject(handler goja.Callable, opts *goja.Object, tls
 	st.mu.Lock()
 	st.servers[id].tlsCfg = tlsCfg
 	st.mu.Unlock()
-	obj := rt.vm.NewObject()
+	obj := jit.Object()
 	obj.Set("__id", id)
-	obj.Set("listen", func(c goja.FunctionCall) goja.Value {
-		port := int(c.Argument(0).ToInteger())
+	obj.Set("listen", jit.BuiltinFn("listen", func(args []jit.Value) jit.Value {
+		port := int(argsAt(args, 0).ToInteger())
 		host := ""
-		if len(c.Arguments) > 1 && !goja.IsUndefined(c.Argument(1)) && !goja.IsNull(c.Argument(1)) {
-			host = c.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() && !args[1].IsNull() {
+			host = args[1].String()
 		}
-		cb, hasCB := splitCB(c)
+		cb, hasCB := splitCB(args)
 		rt.listenHTTP(id, port, host, cb, hasCB)
 		return obj
-	})
-	obj.Set("close", func(c goja.FunctionCall) goja.Value {
-		cb, hasCB := splitCB(c)
+	}))
+	obj.Set("close", jit.BuiltinFn("close", func(args []jit.Value) jit.Value {
+		cb, hasCB := splitCB(args)
 		rt.closeHTTPServer(id, cb, hasCB)
 		return obj
-	})
-	obj.Set("address", func(c goja.FunctionCall) goja.Value {
+	}))
+	obj.Set("address", jit.BuiltinFn("address", func(args []jit.Value) jit.Value {
 		return rt.serverAddress(id)
-	})
-	obj.Set("unref", func(c goja.FunctionCall) goja.Value { return obj })
-	obj.Set("ref", func(c goja.FunctionCall) goja.Value { return obj })
+	}))
+	obj.Set("unref", jit.BuiltinFn("unref", func(args []jit.Value) jit.Value { return obj }))
+	obj.Set("ref", jit.BuiltinFn("ref", func(args []jit.Value) jit.Value { return obj }))
 	return obj
 }
 
@@ -166,7 +164,7 @@ func (rt *Runtime) newHTTPServer(srv *http.Server) int {
 	return id
 }
 
-func (rt *Runtime) listenHTTP(id, port int, host string, cb goja.Value, hasCB bool) {
+func (rt *Runtime) listenHTTP(id, port int, host string, cb jit.Value, hasCB bool) {
 	st := rt.httpState()
 	st.mu.Lock()
 	entry := st.servers[id]
@@ -179,8 +177,10 @@ func (rt *Runtime) listenHTTP(id, port int, host string, cb goja.Value, hasCB bo
 	if err != nil {
 		rt.Enqueue(func() {
 			if hasCB {
-				if f, ok := goja.AssertFunction(cb); ok {
-					f(goja.Undefined(), rt.jsError(err))
+				if f := cb; f.IsCallable() {
+					if _, err := rt.jitCall(f, jit.Undef(), rt.jsThrow(err).Value); err != nil {
+						rt.reportUncaught(err)
+					}
 				}
 			}
 		})
@@ -197,14 +197,16 @@ func (rt *Runtime) listenHTTP(id, port int, host string, cb goja.Value, hasCB bo
 	}()
 	rt.Enqueue(func() {
 		if hasCB {
-			if f, ok := goja.AssertFunction(cb); ok {
-				f(goja.Undefined(), goja.Null())
+			if f := cb; f.IsCallable() {
+				if _, err := rt.jitCall(f, jit.Undef(), jit.Null()); err != nil {
+					rt.reportUncaught(err)
+				}
 			}
 		}
 	})
 }
 
-func (rt *Runtime) closeHTTPServer(id int, cb goja.Value, hasCB bool) {
+func (rt *Runtime) closeHTTPServer(id int, cb jit.Value, hasCB bool) {
 	st := rt.httpState()
 	st.mu.Lock()
 	entry := st.servers[id]
@@ -216,20 +218,22 @@ func (rt *Runtime) closeHTTPServer(id int, cb goja.Value, hasCB bool) {
 	}
 	if hasCB {
 		rt.Enqueue(func() {
-			if f, ok := goja.AssertFunction(cb); ok {
-				f(goja.Undefined(), goja.Null())
+			if f := cb; f.IsCallable() {
+				if _, err := rt.jitCall(f, jit.Undef(), jit.Null()); err != nil {
+					rt.reportUncaught(err)
+				}
 			}
 		})
 	}
 }
 
-func (rt *Runtime) serverAddress(id int) goja.Value {
+func (rt *Runtime) serverAddress(id int) jit.Value {
 	st := rt.httpState()
 	st.mu.Lock()
 	entry := st.servers[id]
 	st.mu.Unlock()
 	if entry == nil || entry.addr == nil {
-		return goja.Null()
+		return jit.Null()
 	}
 	addr := entry.addr.String()
 	host, port, err := net.SplitHostPort(addr)
@@ -244,7 +248,7 @@ func (rt *Runtime) serverAddress(id int) goja.Value {
 }
 
 // serveHTTP bridges an incoming Go request to a Node-style (req, res) pair.
-func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *http.Request) {
+func (rt *Runtime) serveHTTP(handler jit.Value, w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
 
@@ -267,7 +271,7 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 		}
 		req.Set("headers", headers)
 		req.Set("rawHeaders", r.Header)
-		sock := rt.vm.NewObject()
+		sock := jit.Object()
 		if r.RemoteAddr != "" {
 			h, p, _ := net.SplitHostPort(r.RemoteAddr)
 			sock.Set("remoteAddress", h)
@@ -283,33 +287,33 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 		res.Set("chunkedEncoding", false)
 
 		resHeaders := map[string]any{}
-		res.Set("setHeader", func(c goja.FunctionCall) goja.Value {
-			resHeaders[c.Argument(0).String()] = c.Argument(1).Export()
-			return goja.Undefined()
+		res.Set("setHeader", func(args []jit.Value) jit.Value {
+			resHeaders[argsAt(args, 0).String()] = argsAt(args, 1).Export()
+			return jit.Undef()
 		})
-		res.Set("getHeader", func(c goja.FunctionCall) goja.Value {
-			v, ok := resHeaders[c.Argument(0).String()]
+		res.Set("getHeader", func(args []jit.Value) jit.Value {
+			v, ok := resHeaders[argsAt(args, 0).String()]
 			if !ok {
-				return goja.Undefined()
+				return jit.Undef()
 			}
 			return rt.toJS(v)
 		})
-		res.Set("getHeaders", func(c goja.FunctionCall) goja.Value {
+		res.Set("getHeaders", func(args []jit.Value) jit.Value {
 			return rt.toJS(resHeaders)
 		})
-		res.Set("removeHeader", func(c goja.FunctionCall) goja.Value {
-			delete(resHeaders, c.Argument(0).String())
-			return goja.Undefined()
+		res.Set("removeHeader", func(args []jit.Value) jit.Value {
+			delete(resHeaders, argsAt(args, 0).String())
+			return jit.Undef()
 		})
-		res.Set("hasHeader", func(c goja.FunctionCall) goja.Value {
-			_, ok := resHeaders[c.Argument(0).String()]
-			return rt.vm.ToValue(ok)
+		res.Set("hasHeader", func(args []jit.Value) jit.Value {
+			_, ok := resHeaders[argsAt(args, 0).String()]
+			return jit.Bool(ok)
 		})
-		res.Set("writeHead", func(c goja.FunctionCall) goja.Value {
-			code := int(c.Argument(0).ToInteger())
+		res.Set("writeHead", func(args []jit.Value) jit.Value {
+			code := int(argsAt(args, 0).ToInteger())
 			res.Set("statusCode", code)
-			if len(c.Arguments) > 1 {
-				if o, ok := c.Argument(1).(*goja.Object); ok {
+			if len(args) > 1 {
+				if o := argObj(args, 1); o.IsObject() {
 					for _, k := range o.Keys() {
 						resHeaders[k] = o.Get(k).Export()
 					}
@@ -322,7 +326,7 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 			res.Set("headersSent", true)
 			return res
 		})
-		res.Set("write", func(c goja.FunctionCall) goja.Value {
+		res.Set("write", func(args []jit.Value) jit.Value {
 			if !res.Get("headersSent").ToBoolean() {
 				for k, v := range resHeaders {
 					w.Header().Set(k, headerValue(v))
@@ -330,16 +334,16 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 				w.WriteHeader(int(res.Get("statusCode").ToInteger()))
 				res.Set("headersSent", true)
 			}
-			data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+			data := rt.argBytes(args, 0)
 			if len(data) > 0 {
 				_, _ = w.Write(data)
 			}
-			return rt.vm.ToValue(true)
+			return jit.Bool(true)
 		})
-		res.Set("end", func(c goja.FunctionCall) goja.Value {
-			if len(c.Arguments) > 0 {
-				if f, ok := goja.AssertFunction(res.Get("write")); ok {
-					f(res, c.Argument(0))
+		res.Set("end", func(args []jit.Value) jit.Value {
+			if len(args) > 0 {
+				if f := res.Get("write"); f.IsCallable() {
+					rt.jitCall(f, res, argsAt(args, 0))
 				}
 			}
 			res.Set("writableEnded", true)
@@ -347,12 +351,12 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 			rt.emitEvent(res, resEmitter, "finish")
 			return res
 		})
-		res.Set("flushHeaders", func(c goja.FunctionCall) goja.Value {
+		res.Set("flushHeaders", func(args []jit.Value) jit.Value {
 			if !res.Get("headersSent").ToBoolean() {
 				w.WriteHeader(int(res.Get("statusCode").ToInteger()))
 				res.Set("headersSent", true)
 			}
-			return goja.Undefined()
+			return jit.Undef()
 		})
 
 		if len(body) > 0 {
@@ -360,7 +364,7 @@ func (rt *Runtime) serveHTTP(handler goja.Callable, w http.ResponseWriter, r *ht
 		}
 		rt.emitEvent(req, reqEmitter, "end")
 
-		if _, err := handler(goja.Undefined(), req, res); err != nil {
+		if _, err := rt.jitCall(handler, jit.Undef(), req, res); err != nil {
 			rt.reportUncaught(err)
 		}
 	})
@@ -387,9 +391,9 @@ func headerValue(v any) string {
 }
 
 // httpRequest performs an outgoing request and bridges the response to JS.
-func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) goja.Value {
-	if opts == nil {
-		panic(rt.vm.NewTypeError("options required"))
+func (rt *Runtime) httpRequest(opts jit.Value, cb jit.Value, useTLS bool) jit.Value {
+	if opts.IsUndef() {
+		panic(jit.Err("TypeError", "options required"))
 	}
 	method := optStr(opts, "method", "GET")
 	host := optStr(opts, "hostname", "")
@@ -410,10 +414,10 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 		host = "localhost"
 	}
 	headers := map[string]string{}
-	if h := opts.Get("headers"); h != nil {
-		if ho, ok := h.(*goja.Object); ok {
-			for _, k := range ho.Keys() {
-				headers[k] = headerValue(ho.Get(k).Export())
+	if h := opts.Get("headers"); !h.IsUndef() {
+		if ho := h.AsObj(); ho != nil {
+			for _, k := range h.Keys() {
+				headers[k] = headerValue(h.Get(k).Export())
 			}
 		}
 	}
@@ -459,7 +463,7 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 		client.Transport = &http.Transport{TLSClientConfig: tlsCfg}
 	}
 
-	reqObj := rt.vm.NewObject()
+	reqObj := jit.Object()
 	reqObj.Set("method", method)
 	reqObj.Set("path", path)
 
@@ -475,8 +479,10 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 		if err != nil {
 			rt.Enqueue(func() {
 				rt.pending--
-				if f, ok := goja.AssertFunction(cb); ok {
-					f(goja.Undefined(), rt.jsError(err))
+				if f := cb; f.IsCallable() {
+					if _, err := rt.jitCall(f, jit.Undef(), rt.jsThrow(err).Value); err != nil {
+						rt.reportUncaught(err)
+					}
 				}
 			})
 			return
@@ -496,10 +502,10 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 			resObj.Set("headers", respHeaders)
 			resObj.Set("rawHeaders", resp.Header)
 			resObj.Set("httpVersion", resp.Proto)
-			resObj.Set("destroy", func(c goja.FunctionCall) goja.Value { return goja.Undefined() })
+			resObj.Set("destroy", jit.BuiltinFn("destroy", func(args []jit.Value) jit.Value { return jit.Undef() }))
 
-			if f, ok := goja.AssertFunction(cb); ok {
-				if _, err := f(goja.Undefined(), resObj); err != nil {
+			if f := cb; f.IsCallable() {
+				if _, err := rt.jitCall(f, jit.Undef(), resObj); err != nil {
 					rt.reportUncaught(err)
 				}
 			}
@@ -527,16 +533,16 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 		})
 	}()
 
-	reqObj.Set("write", func(c goja.FunctionCall) goja.Value {
-		data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+	reqObj.Set("write", func(args []jit.Value) jit.Value {
+		data := rt.argBytes(args, 0)
 		if len(data) > 0 {
 			bodyChunks <- data
 		}
-		return rt.vm.ToValue(true)
+		return jit.Bool(true)
 	})
-	reqObj.Set("end", func(c goja.FunctionCall) goja.Value {
-		if len(c.Arguments) > 0 {
-			data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+	reqObj.Set("end", func(args []jit.Value) jit.Value {
+		if len(args) > 0 {
+			data := rt.argBytes(args, 0)
 			if len(data) > 0 {
 				bodyChunks <- data
 			}
@@ -544,14 +550,14 @@ func (rt *Runtime) httpRequest(opts *goja.Object, cb goja.Value, useTLS bool) go
 		close(bodyChunks)
 		return reqObj
 	})
-	reqObj.Set("setHeader", func(c goja.FunctionCall) goja.Value {
-		req.Header.Set(c.Argument(0).String(), headerValue(c.Argument(1).Export()))
-		return goja.Undefined()
+	reqObj.Set("setHeader", func(args []jit.Value) jit.Value {
+		req.Header.Set(argsAt(args, 0).String(), headerValue(argsAt(args, 1).Export()))
+		return jit.Undef()
 	})
-	reqObj.Set("on", func(c goja.FunctionCall) goja.Value { return reqObj })
-	reqObj.Set("once", func(c goja.FunctionCall) goja.Value { return reqObj })
-	reqObj.Set("abort", func(c goja.FunctionCall) goja.Value { return reqObj })
-	reqObj.Set("setTimeout", func(c goja.FunctionCall) goja.Value { return reqObj })
+	reqObj.Set("on", func(args []jit.Value) jit.Value { return reqObj })
+	reqObj.Set("once", func(args []jit.Value) jit.Value { return reqObj })
+	reqObj.Set("abort", func(args []jit.Value) jit.Value { return reqObj })
+	reqObj.Set("setTimeout", func(args []jit.Value) jit.Value { return reqObj })
 	return reqObj
 }
 
@@ -599,6 +605,3 @@ func atoi(s string) int {
 	}
 	return n
 }
-
-var _ = json.Marshal
-var _ = bytes.NewBuffer

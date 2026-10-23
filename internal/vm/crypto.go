@@ -11,89 +11,87 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash"
-	"io"
 	"sync"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerCrypto() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
-	hashes := rt.vm.NewObject()
-	hashes.Set("md5", rt.newHashOp("md5"))
-	hashes.Set("sha1", rt.newHashOp("sha1"))
-	hashes.Set("sha256", rt.newHashOp("sha256"))
-	hashes.Set("sha512", rt.newHashOp("sha512"))
-	hashes.Set("sha384", rt.newHashOp("sha384"))
-	hashes.Set("sha224", rt.newHashOp("sha224"))
+	hashes := jit.Object()
+	setFn(hashes, "md5", rt.newHashOp("md5"))
+	setFn(hashes, "sha1", rt.newHashOp("sha1"))
+	setFn(hashes, "sha256", rt.newHashOp("sha256"))
+	setFn(hashes, "sha512", rt.newHashOp("sha512"))
+	setFn(hashes, "sha384", rt.newHashOp("sha384"))
+	setFn(hashes, "sha224", rt.newHashOp("sha224"))
 	mod.Set("hashes", hashes)
 
-	hmacs := rt.vm.NewObject()
-	hmacs.Set("md5", rt.newHmacOp("md5"))
-	hmacs.Set("sha1", rt.newHmacOp("sha1"))
-	hmacs.Set("sha256", rt.newHmacOp("sha256"))
-	hmacs.Set("sha512", rt.newHmacOp("sha512"))
-	hmacs.Set("sha384", rt.newHmacOp("sha384"))
-	hmacs.Set("sha224", rt.newHmacOp("sha224"))
+	hmacs := jit.Object()
+	setFn(hmacs, "md5", rt.newHmacOp("md5"))
+	setFn(hmacs, "sha1", rt.newHmacOp("sha1"))
+	setFn(hmacs, "sha256", rt.newHmacOp("sha256"))
+	setFn(hmacs, "sha512", rt.newHmacOp("sha512"))
+	setFn(hmacs, "sha384", rt.newHmacOp("sha384"))
+	setFn(hmacs, "sha224", rt.newHmacOp("sha224"))
 	mod.Set("hmacs", hmacs)
 
-	mod.Set("randomBytes", func(call goja.FunctionCall) goja.Value {
-		n := int(call.Argument(0).ToInteger())
+	setFn(mod, "randomBytes", func(args []jit.Value) jit.Value {
+		n := int(argInt(args, 0))
 		if n < 0 {
-			panic(rt.vm.NewGoError(errors.New("size must be non-negative")))
+			panic(rt.jsThrow(errors.New("size must be non-negative")))
 		}
 		b := make([]byte, n)
 		if _, err := rand.Read(b); err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		return rt.newUint8Array(b)
 	})
 
-	mod.Set("randomUUID", func(call goja.FunctionCall) goja.Value {
+	setFn(mod, "randomUUID", func(args []jit.Value) jit.Value {
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		b[6] = (b[6] & 0x0f) | 0x40
 		b[8] = (b[8] & 0x3f) | 0x80
-		return rt.vm.ToValue(formatUUID(b))
+		return rt.toJS(formatUUID(b))
 	})
 
-	mod.Set("timingSafeEqual", func(call goja.FunctionCall) goja.Value {
-		a := rt.argBytes([]goja.Value{call.Argument(0)}, 0)
-		b := rt.argBytes([]goja.Value{call.Argument(1)}, 0)
-		return rt.vm.ToValue(hmac.Equal(a, b))
+	setFn(mod, "timingSafeEqual", func(args []jit.Value) jit.Value {
+		a := rt.argBytes(args, 0)
+		b := rt.argBytes(args, 1)
+		return rt.toJS(hmac.Equal(a, b))
 	})
 
-	mod.Set("getHashes", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue([]string{"md5", "sha1", "sha224", "sha256", "sha384", "sha512"})
+	setFn(mod, "getHashes", func(args []jit.Value) jit.Value {
+		return rt.toJS([]string{"md5", "sha1", "sha224", "sha256", "sha384", "sha512"})
 	})
 
-	mod.Set("pbkdf2", rt.pbkdf2Func())
-	mod.Set("pbkdf2Sync", func(call goja.FunctionCall) goja.Value {
-		password := rt.argBytes([]goja.Value{call.Argument(0)}, 0)
-		salt := rt.argBytes([]goja.Value{call.Argument(1)}, 0)
-		iterations := int(call.Argument(2).ToInteger())
-		keylen := int(call.Argument(3).ToInteger())
+	setFn(mod, "pbkdf2", rt.pbkdf2Func())
+	setFn(mod, "pbkdf2Sync", func(args []jit.Value) jit.Value {
+		password := rt.argBytes(args, 0)
+		salt := rt.argBytes(args, 1)
+		iterations := int(argInt(args, 2))
+		keylen := int(argInt(args, 3))
 		digest := "sha1"
-		if len(call.Arguments) > 4 && !goja.IsUndefined(call.Argument(4)) {
-			digest = call.Argument(4).String()
+		if len(args) > 4 && !args[4].IsUndef() {
+			digest = args[4].String()
 		}
 		out := make([]byte, keylen)
 		if err := pbkdf2Key(password, salt, iterations, keylen, digest, out); err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		return rt.toJS(binResult(out))
 	})
-	mod.Set("randomInt", rt.randomIntFunc())
+	setFn(mod, "randomInt", rt.randomIntFunc())
 
-	// crypto.subtle: expose the Go standard library implementations.
-	sub := rt.vm.NewObject()
-	sub.Set("digest", func(call goja.FunctionCall) goja.Value {
-		algo := call.Argument(0).String()
-		data := rt.argBytes([]goja.Value{call.Argument(1)}, 0)
-		p := rt.subtlePromise(func() ([]byte, error) {
+	sub := jit.Object()
+	setFn(sub, "digest", func(args []jit.Value) jit.Value {
+		algo := argStr(args, 0)
+		data := rt.argBytes(args, 1)
+		return rt.subtlePromise(func() ([]byte, error) {
 			switch algo {
 			case "SHA-1", "SHA1":
 				s := sha1.Sum(data)
@@ -110,18 +108,15 @@ func (rt *Runtime) registerCrypto() {
 			}
 			return nil, errors.New("unsupported digest algorithm: " + algo)
 		})
-		return p
 	})
-	sub.Set("importKey", func(call goja.FunctionCall) goja.Value {
-		// Only raw-key imports are supported.
-		return rt.vm.ToValue(map[string]any{"type": "secret"})
+	setFn(sub, "importKey", func(args []jit.Value) jit.Value {
+		return rt.toJS(map[string]any{"type": "secret"})
 	})
-	subtleCrypto := mod
-	subtleCrypto.Set("subtle", sub)
+	mod.Set("subtle", sub)
 	rt.natives["__crypto"] = mod
 }
 
-func (rt *Runtime) subtlePromise(fn func() ([]byte, error)) goja.Value {
+func (rt *Runtime) subtlePromise(fn func() ([]byte, error)) jit.Value {
 	return rt.goPromise(func() (any, error) {
 		b, err := fn()
 		if err != nil {
@@ -142,25 +137,25 @@ type hashOp struct {
 	h  hash.Hash
 }
 
-func (rt *Runtime) newHashOp(algo string) func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
+func (rt *Runtime) newHashOp(algo string) func(args []jit.Value) jit.Value {
+	return func(args []jit.Value) jit.Value {
 		h, err := newHash(algo)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		op := &hashOp{h: h}
-		obj := rt.vm.NewObject()
-		obj.Set("update", func(c goja.FunctionCall) goja.Value {
-			data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+		obj := jit.Object()
+		setFn(obj, "update", func(args []jit.Value) jit.Value {
+			data := rt.argBytes(args, 0)
 			op.mu.Lock()
 			op.h.Write(data)
 			op.mu.Unlock()
 			return obj
 		})
-		obj.Set("digest", func(c goja.FunctionCall) goja.Value {
+		setFn(obj, "digest", func(args []jit.Value) jit.Value {
 			enc := "hex"
-			if len(c.Arguments) > 0 && !goja.IsUndefined(c.Argument(0)) {
-				enc = c.Argument(0).String()
+			if len(args) > 0 && !args[0].IsUndef() {
+				enc = args[0].String()
 			}
 			op.mu.Lock()
 			sum := op.h.Sum(nil)
@@ -171,24 +166,24 @@ func (rt *Runtime) newHashOp(algo string) func(goja.FunctionCall) goja.Value {
 	}
 }
 
-func (rt *Runtime) newHmacOp(algo string) func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
-		key := rt.argBytes([]goja.Value{call.Argument(0)}, 0)
+func (rt *Runtime) newHmacOp(algo string) func(args []jit.Value) jit.Value {
+	return func(args []jit.Value) jit.Value {
+		key := rt.argBytes(args, 0)
 		newH, err := newHashFunc(algo)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		mac := hmac.New(newH, key)
-		obj := rt.vm.NewObject()
-		obj.Set("update", func(c goja.FunctionCall) goja.Value {
-			data := rt.argBytes([]goja.Value{c.Argument(0)}, 0)
+		obj := jit.Object()
+		setFn(obj, "update", func(args []jit.Value) jit.Value {
+			data := rt.argBytes(args, 0)
 			mac.Write(data)
 			return obj
 		})
-		obj.Set("digest", func(c goja.FunctionCall) goja.Value {
+		setFn(obj, "digest", func(args []jit.Value) jit.Value {
 			enc := "hex"
-			if len(c.Arguments) > 0 && !goja.IsUndefined(c.Argument(0)) {
-				enc = c.Argument(0).String()
+			if len(args) > 0 && !args[0].IsUndef() {
+				enc = args[0].String()
 			}
 			return rt.toJS(encodeDigest(mac.Sum(nil), enc))
 		})
@@ -234,15 +229,15 @@ func encodeDigest(sum []byte, enc string) any {
 	}
 }
 
-func (rt *Runtime) pbkdf2Func() func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
-		password := rt.argBytes([]goja.Value{call.Argument(0)}, 0)
-		salt := rt.argBytes([]goja.Value{call.Argument(1)}, 0)
-		iterations := int(call.Argument(2).ToInteger())
-		keylen := int(call.Argument(3).ToInteger())
+func (rt *Runtime) pbkdf2Func() func(args []jit.Value) jit.Value {
+	return func(args []jit.Value) jit.Value {
+		password := rt.argBytes(args, 0)
+		salt := rt.argBytes(args, 1)
+		iterations := int(argInt(args, 2))
+		keylen := int(argInt(args, 3))
 		digest := "sha1"
-		if len(call.Arguments) > 4 && !goja.IsUndefined(call.Argument(4)) {
-			digest = call.Argument(4).String()
+		if len(args) > 4 && !args[4].IsUndef() {
+			digest = args[4].String()
 		}
 		return rt.goPromise(func() (any, error) {
 			out := make([]byte, keylen)
@@ -254,26 +249,26 @@ func (rt *Runtime) pbkdf2Func() func(goja.FunctionCall) goja.Value {
 	}
 }
 
-func (rt *Runtime) randomIntFunc() func(goja.FunctionCall) goja.Value {
-	return func(call goja.FunctionCall) goja.Value {
+func (rt *Runtime) randomIntFunc() func(args []jit.Value) jit.Value {
+	return func(args []jit.Value) jit.Value {
 		min := int64(0)
 		max := int64(0)
-		switch len(call.Arguments) {
+		switch len(args) {
 		case 1:
-			max = call.Argument(0).ToInteger()
+			max = args[0].ToInteger()
 		case 2:
-			min = call.Argument(0).ToInteger()
-			max = call.Argument(1).ToInteger()
+			min = args[0].ToInteger()
+			max = args[1].ToInteger()
 		}
 		if max <= min {
-			panic(rt.vm.NewGoError(errors.New("max must be greater than min")))
+			panic(rt.jsThrow(errors.New("max must be greater than min")))
 		}
 		span := uint64(max - min)
 		var b [8]byte
 		if _, err := rand.Read(b[:]); err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
-		return rt.vm.ToValue(min + int64(uint64(binaryLE(b[:]))%span))
+		return rt.toJS(min + int64(uint64(binaryLE(b[:]))%span))
 	}
 }
 
@@ -284,5 +279,3 @@ func binaryLE(b []byte) uint64 {
 	}
 	return v
 }
-
-var _ = io.Discard

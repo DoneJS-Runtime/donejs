@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/dop251/goja"
 )
 
 // Selftest exercises the runtime's public surface and reports the outcome to w.
@@ -525,14 +523,14 @@ func evalOK(rt *Runtime, src string) error {
 
 // readGlobalBool reads a boolean global.
 func (rt *Runtime) readGlobalBool(name string) bool {
-	v := rt.vm.Get(name)
-	return v != nil && v.ToBoolean()
+	v := rt.jit.GetGlobal(name)
+	return !v.IsUndef() && v.ToBoolean()
 }
 
 // readGlobalString reads a string global.
 func (rt *Runtime) readGlobalString(name string) string {
-	v := rt.vm.Get(name)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+	v := rt.jit.GetGlobal(name)
+	if v.IsUndef() || v.IsNull() {
 		return ""
 	}
 	return v.String()

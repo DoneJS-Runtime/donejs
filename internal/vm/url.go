@@ -4,88 +4,88 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerURL() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
 	// parse returns the WHATWG-ish components of a URL.
-	mod.Set("parse", func(call goja.FunctionCall) goja.Value {
-		raw := call.Argument(0).String()
+	setFn(mod, "parse", func(args []jit.Value) jit.Value {
+		raw := argsAt(args, 0).String()
 		base := ""
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			base = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			base = args[1].String()
 		}
 		u, err := url.Parse(raw)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		if base != "" {
 			b, err := url.Parse(base)
 			if err != nil {
-				panic(rt.vm.NewGoError(err))
+				panic(rt.jsThrow(err))
 			}
 			u = b.ResolveReference(u)
 		}
 		return rt.toJS(map[string]any{
-			"href":      u.String(),
-			"protocol":  u.Scheme + ":",
-			"host":      u.Host,
-			"hostname":  u.Hostname(),
-			"port":      u.Port(),
-			"pathname":  u.Path,
-			"search":    searchOf(u),
-			"hash":      hashOf(u),
-			"username":  u.User.Username(),
-			"password":  passwordOf(u),
-			"origin":    originOf(u),
-			"hostName":  u.Hostname(),
-			"path":      u.Path,
+			"href":     u.String(),
+			"protocol": u.Scheme + ":",
+			"host":     u.Host,
+			"hostname": u.Hostname(),
+			"port":     u.Port(),
+			"pathname": u.Path,
+			"search":   searchOf(u),
+			"hash":     hashOf(u),
+			"username": u.User.Username(),
+			"password": passwordOf(u),
+			"origin":   originOf(u),
+			"hostName": u.Hostname(),
+			"path":     u.Path,
 		})
 	})
 
 	// resolve implements new URL(relative, base) semantics.
-	mod.Set("resolve", func(call goja.FunctionCall) goja.Value {
-		rel := call.Argument(0).String()
+	setFn(mod, "resolve", func(args []jit.Value) jit.Value {
+		rel := argsAt(args, 0).String()
 		base := ""
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			base = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			base = args[1].String()
 		}
 		b, err := url.Parse(base)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		r, err := url.Parse(rel)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
-		return rt.vm.ToValue(b.ResolveReference(r).String())
+		return jit.Str(b.ResolveReference(r).String())
 	})
 
-	mod.Set("domainToASCII", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(call.Argument(0).String())
+	setFn(mod, "domainToASCII", func(args []jit.Value) jit.Value {
+		return jit.Str(argsAt(args, 0).String())
 	})
-	mod.Set("domainToUnicode", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(call.Argument(0).String())
+	setFn(mod, "domainToUnicode", func(args []jit.Value) jit.Value {
+		return jit.Str(argsAt(args, 0).String())
 	})
-	mod.Set("fileURLToPath", func(call goja.FunctionCall) goja.Value {
-		u, err := url.Parse(call.Argument(0).String())
+	setFn(mod, "fileURLToPath", func(args []jit.Value) jit.Value {
+		u, err := url.Parse(argsAt(args, 0).String())
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		if u.Scheme != "file" {
-			panic(rt.vm.NewGoError(&url.Error{Op: "fileURLToPath", URL: u.String(), Err: errNotFileScheme}))
+			panic(rt.jsThrow(&url.Error{Op: "fileURLToPath", URL: u.String(), Err: errNotFileScheme}))
 		}
-		return rt.vm.ToValue(u.Path)
+		return jit.Str(u.Path)
 	})
-	mod.Set("pathToFileURL", func(call goja.FunctionCall) goja.Value {
-		p := call.Argument(0).String()
+	setFn(mod, "pathToFileURL", func(args []jit.Value) jit.Value {
+		p := argsAt(args, 0).String()
 		if !strings.HasPrefix(p, "/") {
 			p = "/" + p
 		}
 		u := &url.URL{Scheme: "file", Path: p}
-		return rt.vm.ToValue(u.String())
+		return jit.Str(u.String())
 	})
 
 	rt.natives["__url"] = mod

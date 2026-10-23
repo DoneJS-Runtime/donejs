@@ -5,28 +5,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerFS() {
-	mod := rt.vm.NewObject()
+	mod := jit.Object()
 
 	sync := opTable{
-		"readFile": func(args []goja.Value) (any, error) {
+		"readFile": func(args []jit.Value) (any, error) {
 			b, err := os.ReadFile(argStr(args, 0))
 			if err != nil {
 				return nil, err
 			}
 			return binResult(b), nil
 		},
-		"writeFile": func(args []goja.Value) (any, error) {
+		"writeFile": func(args []jit.Value) (any, error) {
 			data := rt.argBytes(args, 1)
 			return nil, os.WriteFile(argStr(args, 0), data, 0o644)
 		},
-		"appendFile": func(args []goja.Value) (any, error) {
+		"appendFile": func(args []jit.Value) (any, error) {
 			data := rt.argBytes(args, 1)
 			f, err := os.OpenFile(argStr(args, 0), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 			if err != nil {
@@ -36,25 +35,25 @@ func (rt *Runtime) registerFS() {
 			_, err = f.Write(data)
 			return nil, err
 		},
-		"exists": func(args []goja.Value) (any, error) {
+		"exists": func(args []jit.Value) (any, error) {
 			_, err := os.Stat(argStr(args, 0))
 			return err == nil, nil
 		},
-		"stat": func(args []goja.Value) (any, error) {
+		"stat": func(args []jit.Value) (any, error) {
 			st, err := os.Stat(argStr(args, 0))
 			if err != nil {
 				return nil, err
 			}
 			return rt.fileStat(st), nil
 		},
-		"lstat": func(args []goja.Value) (any, error) {
+		"lstat": func(args []jit.Value) (any, error) {
 			st, err := os.Lstat(argStr(args, 0))
 			if err != nil {
 				return nil, err
 			}
 			return rt.fileStat(st), nil
 		},
-		"readdir": func(args []goja.Value) (any, error) {
+		"readdir": func(args []jit.Value) (any, error) {
 			entries, err := os.ReadDir(argStr(args, 0))
 			if err != nil {
 				return nil, err
@@ -66,7 +65,7 @@ func (rt *Runtime) registerFS() {
 			sort.Strings(names)
 			return names, nil
 		},
-		"mkdir": func(args []goja.Value) (any, error) {
+		"mkdir": func(args []jit.Value) (any, error) {
 			opts := argObj(args, 1)
 			mode := os.FileMode(optInt(opts, "mode", 0o777))
 			if optBool(opts, "recursive", false) {
@@ -74,10 +73,10 @@ func (rt *Runtime) registerFS() {
 			}
 			return nil, os.Mkdir(argStr(args, 0), mode)
 		},
-		"rmdir": func(args []goja.Value) (any, error) {
+		"rmdir": func(args []jit.Value) (any, error) {
 			return nil, os.Remove(argStr(args, 0))
 		},
-		"rm": func(args []goja.Value) (any, error) {
+		"rm": func(args []jit.Value) (any, error) {
 			opts := argObj(args, 1)
 			p := argStr(args, 0)
 			if optBool(opts, "recursive", false) {
@@ -89,33 +88,33 @@ func (rt *Runtime) registerFS() {
 			}
 			return nil, err
 		},
-		"unlink": func(args []goja.Value) (any, error) {
+		"unlink": func(args []jit.Value) (any, error) {
 			return nil, os.Remove(argStr(args, 0))
 		},
-		"rename": func(args []goja.Value) (any, error) {
+		"rename": func(args []jit.Value) (any, error) {
 			return nil, os.Rename(argStr(args, 0), argStr(args, 1))
 		},
-		"copyFile": func(args []goja.Value) (any, error) {
+		"copyFile": func(args []jit.Value) (any, error) {
 			return nil, copyFile(argStr(args, 0), argStr(args, 1))
 		},
-		"realpath": func(args []goja.Value) (any, error) {
+		"realpath": func(args []jit.Value) (any, error) {
 			p, err := filepath.EvalSymlinks(argStr(args, 0))
 			if err != nil {
 				return nil, err
 			}
 			return p, nil
 		},
-		"access": func(args []goja.Value) (any, error) {
+		"access": func(args []jit.Value) (any, error) {
 			_, err := os.Stat(argStr(args, 0))
 			return nil, err
 		},
-		"chmod": func(args []goja.Value) (any, error) {
+		"chmod": func(args []jit.Value) (any, error) {
 			return nil, os.Chmod(argStr(args, 0), os.FileMode(argInt(args, 1)))
 		},
-		"truncate": func(args []goja.Value) (any, error) {
+		"truncate": func(args []jit.Value) (any, error) {
 			return nil, os.Truncate(argStr(args, 0), int64(argInt(args, 1)))
 		},
-		"readdirEntries": func(args []goja.Value) (any, error) {
+		"readdirEntries": func(args []jit.Value) (any, error) {
 			entries, err := os.ReadDir(argStr(args, 0))
 			if err != nil {
 				return nil, err
@@ -127,8 +126,8 @@ func (rt *Runtime) registerFS() {
 					continue
 				}
 				out = append(out, map[string]any{
-					"name":  e.Name(),
-					"isFile": func() bool { return info.Mode().IsRegular() },
+					"name":        e.Name(),
+					"isFile":      func() bool { return info.Mode().IsRegular() },
 					"isDirectory": func() bool { return e.IsDir() },
 					"isSymbolicLink": func() bool {
 						return e.Type()&os.ModeSymlink != 0
@@ -137,16 +136,16 @@ func (rt *Runtime) registerFS() {
 			}
 			return out, nil
 		},
-		"mkdtemp": func(args []goja.Value) (any, error) {
+		"mkdtemp": func(args []jit.Value) (any, error) {
 			return os.MkdirTemp("", filepath.Base(argStr(args, 0)))
 		},
-		"readlink": func(args []goja.Value) (any, error) {
+		"readlink": func(args []jit.Value) (any, error) {
 			return os.Readlink(argStr(args, 0))
 		},
-		"symlink": func(args []goja.Value) (any, error) {
+		"symlink": func(args []jit.Value) (any, error) {
 			return nil, os.Symlink(argStr(args, 0), argStr(args, 1))
 		},
-		"open": func(args []goja.Value) (any, error) {
+		"open": func(args []jit.Value) (any, error) {
 			opts := argObj(args, 1)
 			flag := os.O_RDONLY
 			switch optStr(opts, "flag", "r") {
@@ -167,7 +166,7 @@ func (rt *Runtime) registerFS() {
 			}
 			return rt.registerFD(f), nil
 		},
-		"read": func(args []goja.Value) (any, error) {
+		"read": func(args []jit.Value) (any, error) {
 			f := rt.lookupFD(argInt(args, 0))
 			if f == nil {
 				return nil, os.ErrInvalid
@@ -179,7 +178,7 @@ func (rt *Runtime) registerFS() {
 			}
 			return pair{}, err
 		},
-		"write": func(args []goja.Value) (any, error) {
+		"write": func(args []jit.Value) (any, error) {
 			f := rt.lookupFD(argInt(args, 0))
 			if f == nil {
 				return nil, os.ErrInvalid
@@ -188,14 +187,14 @@ func (rt *Runtime) registerFS() {
 			n, err := f.Write(data)
 			return pair{b: int64(n)}, err
 		},
-		"close": func(args []goja.Value) (any, error) {
+		"close": func(args []jit.Value) (any, error) {
 			f := rt.lookupFD(argInt(args, 0))
 			if f == nil {
 				return nil, nil
 			}
 			return nil, f.Close()
 		},
-		"statFd": func(args []goja.Value) (any, error) {
+		"statFd": func(args []jit.Value) (any, error) {
 			f := rt.lookupFD(argInt(args, 0))
 			if f == nil {
 				return nil, os.ErrInvalid
@@ -206,7 +205,7 @@ func (rt *Runtime) registerFS() {
 			}
 			return rt.fileStat(st), nil
 		},
-		"createReadStream": func(args []goja.Value) (any, error) {
+		"createReadStream": func(args []jit.Value) (any, error) {
 			return nil, nil
 		},
 	}
@@ -214,7 +213,7 @@ func (rt *Runtime) registerFS() {
 	mod.Set("sync", rt.syncDispatch(sync))
 	mod.Set("async", rt.asyncDispatch(sync))
 
-	consts := rt.vm.NewObject()
+	consts := jit.Object()
 	consts.Set("F_OK", 0)
 	consts.Set("R_OK", 4)
 	consts.Set("W_OK", 2)
@@ -230,9 +229,9 @@ type pair struct {
 	b any
 }
 
-func (rt *Runtime) argBytes(args []goja.Value, i int) []byte {
+func (rt *Runtime) argBytes(args []jit.Value, i int) []byte {
 	v := argsAt(args, i)
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+	if v.IsUndef() || v.IsNull() {
 		return nil
 	}
 	if s, ok := v.Export().(string); ok {
@@ -293,5 +292,3 @@ const errIsDir = simpleErr("illegal operation on a directory")
 func utimes(p string, atime, mtime time.Time) error {
 	return os.Chtimes(p, atime, mtime)
 }
-
-var _ = strings.TrimSpace

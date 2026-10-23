@@ -3,6 +3,7 @@ package jit
 import (
 	"math"
 	"strconv"
+	"strings"
 )
 
 // Tagged value. Numbers live entirely in the struct (no heap), which keeps the
@@ -17,6 +18,7 @@ const (
 	tStr
 	tObj
 	tFunc
+	tHost
 )
 
 type Value struct {
@@ -25,14 +27,28 @@ type Value struct {
 	ref any
 }
 
-func Undef() Value          { return Value{tag: tUndef} }
-func Null() Value           { return Value{tag: tNull} }
-func Bool(b bool) Value     { if b { return Value{tag: tBool, n: 1} }; return Value{tag: tBool} }
-func Num(f float64) Value   { return Value{tag: tNum, n: f} }
-func Str(s string) Value    { return Value{tag: tStr, ref: s} }
-func ObjVal(o *Obj) Value      { return Value{tag: tObj, ref: o} }
-func ArrVal(a *Arr) Value      { return Value{tag: tObj, ref: a} }
+func Undef() Value { return Value{tag: tUndef} }
+func Null() Value  { return Value{tag: tNull} }
+func Bool(b bool) Value {
+	if b {
+		return Value{tag: tBool, n: 1}
+	}
+	return Value{tag: tBool}
+}
+func Num(f float64) Value     { return Value{tag: tNum, n: f} }
+func Str(s string) Value      { return Value{tag: tStr, ref: s} }
+func ObjVal(o *Obj) Value     { return Value{tag: tObj, ref: o} }
+func ArrVal(a *Arr) Value     { return Value{tag: tObj, ref: a} }
 func Func(f *FuncProto) Value { return Value{tag: tFunc, ref: f} }
+
+// Closure binds a function to the captured variables of the frame it was
+// created in. Functions with no captures are stored as a bare *FuncProto.
+type Closure struct {
+	Proto *FuncProto
+	Caps  []*Value
+}
+
+func ClosureVal(c *Closure) Value { return Value{tag: tFunc, ref: c} }
 
 func (v Value) AsObj() *Obj {
 	if o, ok := v.ref.(*Obj); ok {
@@ -46,14 +62,72 @@ func (v Value) AsArr() *Arr {
 	}
 	return nil
 }
-func (v Value) AsFunc() *FuncProto { if f, ok := v.ref.(*FuncProto); ok { return f }; return nil }
-func (v Value) AsBuiltin() *builtin { if b, ok := v.ref.(*builtin); ok { return b }; return nil }
+func (v Value) AsFunc() *FuncProto {
+	switch f := v.ref.(type) {
+	case *FuncProto:
+		return f
+	case *Closure:
+		return f.Proto
+	}
+	return nil
+}
+
+// AsClosure returns the closure a function value was created with, or nil.
+func (v Value) AsClosure() *Closure {
+	if c, ok := v.ref.(*Closure); ok {
+		return c
+	}
+	return nil
+}
+
+// FuncParts splits a callable into its prototype and its captures.
+func (v Value) FuncParts() (*FuncProto, *Closure) {
+	switch f := v.ref.(type) {
+	case *Closure:
+		return f.Proto, f
+	case *FuncProto:
+		return f, nil
+	}
+	return nil, nil
+}
+func (v Value) AsBuiltin() *builtin {
+	if b, ok := v.ref.(*builtin); ok {
+		return b
+	}
+	return nil
+}
 
 func (v Value) IsNum() bool   { return v.tag == tNum }
 func (v Value) IsUndef() bool { return v.tag == tUndef }
 func (v Value) IsNull() bool  { return v.tag == tNull || v.tag == tUndef }
 func (v Value) IsObj() bool   { return v.tag == tObj }
-func (v Value) AsStr() string { if s, ok := v.ref.(string); ok { return s }; return "" }
+func (v Value) IsBool() bool  { return v.tag == tBool }
+func (v Value) IsStr() bool   { return v.tag == tStr }
+func (v Value) IsFunc() bool  { return v.tag == tFunc }
+
+// AsNum exposes the numeric payload (used by the host bridge).
+func (v Value) AsNum() float64 { return v.n }
+
+// AsBool exposes the boolean payload (used by the host bridge).
+func (v Value) AsBool() bool { return v.n != 0 }
+
+// AsString exposes the string payload (used by the host bridge).
+func (v Value) AsString() string { return v.AsStr() }
+
+// AsProto exposes the function prototype (used by the host bridge).
+func (v Value) AsProto() *FuncProto { return v.AsFunc() }
+
+// AsObject exposes the object payload (used by the host bridge).
+func (v Value) AsObject() *Obj { return v.AsObj() }
+
+// AsArray exposes the array payload (used by the host bridge).
+func (v Value) AsArray() *Arr { return v.AsArr() }
+func (v Value) AsStr() string {
+	if s, ok := v.ref.(string); ok {
+		return s
+	}
+	return ""
+}
 
 // truthy follows JS ToBoolean for the types we have.
 func (v Value) truthy() bool {
@@ -66,7 +140,7 @@ func (v Value) truthy() bool {
 		return v.n != 0 && !math.IsNaN(v.n)
 	case tStr:
 		return v.ref.(string) != ""
-	case tObj:
+	case tObj, tFunc, tHost:
 		return true
 	}
 	return false
@@ -88,6 +162,8 @@ func (v Value) toNumber() float64 {
 		return 0
 	case tStr:
 		return parseNum(v.ref.(string))
+	case tHost:
+		return math.NaN()
 	}
 	return math.NaN()
 }
@@ -147,6 +223,22 @@ func (v Value) toStr() string {
 	case tStr:
 		return v.ref.(string)
 	case tObj:
+		if a, ok := v.ref.(*Arr); ok {
+			parts := make([]string, len(a.elems))
+			for i, e := range a.elems {
+				if e.IsNull() {
+					parts[i] = ""
+				} else {
+					parts[i] = e.toStr()
+				}
+			}
+			return strings.Join(parts, ",")
+		}
+		return "[object Object]"
+	case tHost:
+		if h, ok := v.ref.(HostValue); ok {
+			return h.Str()
+		}
 		return "[object Object]"
 	}
 	return ""

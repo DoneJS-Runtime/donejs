@@ -6,22 +6,22 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 func (rt *Runtime) registerMisc() {
-	m := rt.vm.NewObject()
-	m.Set("memStats", func(call goja.FunctionCall) goja.Value {
-		return rt.vm.ToValue(memStats())
+	m := jit.Object()
+	setFn(m, "memStats", func(args []jit.Value) jit.Value {
+		return rt.toJS(memStats())
 	})
-	m.Set("gc", func(call goja.FunctionCall) goja.Value {
+	setFn(m, "gc", func(args []jit.Value) jit.Value {
 		runtime.GC()
-		return goja.Undefined()
+		return jit.Undef()
 	})
-	m.Set("sleep", func(call goja.FunctionCall) goja.Value {
-		d := time.Duration(call.Argument(0).ToInteger()) * time.Millisecond
+	setFn(m, "sleep", func(args []jit.Value) jit.Value {
+		d := time.Duration(argsAt(args, 0).ToInteger()) * time.Millisecond
 		time.Sleep(d)
-		return goja.Undefined()
+		return jit.Undef()
 	})
 	rt.natives["__misc"] = m
 }

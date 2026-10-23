@@ -2,24 +2,25 @@ package vm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 type jsModule struct {
-	exports goja.Value
+	exports jit.Value
 	loaded  bool
 }
 
 var nodePrefix = func(s string) string { return strings.TrimPrefix(s, "node:") }
 
 // requireFrom implements CommonJS resolution starting at dir.
-func (rt *Runtime) requireFrom(dir string, spec string) (goja.Value, error) {
+func (rt *Runtime) requireFrom(dir string, spec string) (jit.Value, error) {
 	spec = nodePrefix(spec)
 
 	// native modules (e.g. __fs)
@@ -39,7 +40,7 @@ func (rt *Runtime) requireFrom(dir string, spec string) (goja.Value, error) {
 		if resolved, ok := rt.resolveFile(p); ok {
 			return rt.loadModule(resolved, false)
 		}
-		return nil, fmt.Errorf("Cannot find module '%s'", spec)
+		return jit.Undef(), fmt.Errorf("Cannot find module '%s'", spec)
 	}
 	// bare specifier: walk node_modules upwards
 	d := dir
@@ -54,7 +55,7 @@ func (rt *Runtime) requireFrom(dir string, spec string) (goja.Value, error) {
 		}
 		d = parent
 	}
-	return nil, fmt.Errorf("Cannot find module '%s'", spec)
+	return jit.Undef(), fmt.Errorf("Cannot find module '%s'", spec)
 }
 
 func (rt *Runtime) resolveFile(p string) (string, bool) {
@@ -116,7 +117,7 @@ func (rt *Runtime) resolveNodeModules(nmDir, spec string) (string, bool) {
 	return rt.resolveFile(filepath.Join(pkgDir, sub))
 }
 
-func (rt *Runtime) loadModule(path string, flush bool) (goja.Value, error) {
+func (rt *Runtime) loadModule(path string, flush bool) (jit.Value, error) {
 	path = filepath.Clean(path)
 	rt.mu.Lock()
 	if m, ok := rt.modCache[path]; ok {
@@ -127,12 +128,12 @@ func (rt *Runtime) loadModule(path string, flush bool) (goja.Value, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return jit.Undef(), err
 	}
 	return rt.loadModuleText(path, string(data), filepath.Dir(path), flush)
 }
 
-func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (goja.Value, error) {
+func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (jit.Value, error) {
 	rt.mu.Lock()
 	if m, ok := rt.modCache[filename]; ok {
 		rt.mu.Unlock()
@@ -140,7 +141,7 @@ func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (goja.V
 	}
 	rt.mu.Unlock()
 
-	mod := &jsModule{exports: rt.vm.NewObject()}
+	mod := &jsModule{exports: jit.Object()}
 	rt.mu.Lock()
 	rt.modCache[filename] = mod
 	rt.mu.Unlock()
@@ -148,41 +149,34 @@ func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (goja.V
 	if strings.HasSuffix(filename, ".json") {
 		var v any
 		if err := json.Unmarshal([]byte(src), &v); err != nil {
-			return nil, fmt.Errorf("%s: %w", filename, err)
+			return jit.Undef(), fmt.Errorf("%s: %w", filename, err)
 		}
-		mod.exports = rt.toJS(v)
+		mod.exports = jit.FromGo(v)
 		mod.loaded = true
 		return mod.exports, nil
 	}
 
-	wrapped := "(function (exports, require, module, __filename, __dirname) {" + src + "\n})"
-	if flush {
-		// Flush the nextTick queue at the end of the entry module so that
-		// process.nextTick callbacks run before promise microtasks.
-		wrapped = "(function (exports, require, module, __filename, __dirname) {" + src + "\n;__donejsFlushTicks();\n})"
-	}
+	wrapped := "(function (exports, require, module, __filename, __dirname) {" + src + "\n;__donejsFlushTicks();\n})"
 	prg, err := rt.compile(filename, wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filename, err)
+		return jit.Undef(), fmt.Errorf("%s: %w", filename, err)
 	}
 
-	moduleObj := rt.vm.NewObject()
+	moduleObj := jit.Object()
 	moduleObj.Set("exports", mod.exports)
 	moduleObj.Set("id", filename)
 	if flush {
 		moduleObj.Set("id", ".")
 	}
 	moduleObj.Set("filename", filename)
-	moduleObj.Set("loaded", false)
-	moduleObj.Set("paths", rt.modulePaths(dir))
-	moduleObj.Set("children", rt.vm.NewArray())
-	// Link to the requiring module, and remember the entry module so that
-	// require.main works the way Node's does.
-	var parent goja.Value = goja.Null()
+	moduleObj.Set("loaded", jit.Bool(false))
+	moduleObj.Set("paths", jit.FromGo(rt.modulePaths(dir)))
+	moduleObj.Set("children", jit.ArrOf())
+	var parent jit.Value = jit.Null()
 	if n := len(rt.modStack); n > 0 {
 		parent = rt.modStack[n-1]
-		if pObj, ok := parent.(*goja.Object); ok {
-			if kids, ok := pObj.Get("children").(*goja.Object); ok {
+		if parent.AsObj() != nil {
+			if kids := parent.Get("children"); kids.AsArr() != nil {
 				kids.Set(strconv.Itoa(int(kids.Get("length").ToInteger())), moduleObj)
 			}
 		}
@@ -192,72 +186,54 @@ func (rt *Runtime) loadModuleText(filename, src, dir string, flush bool) (goja.V
 		rt.mainModule = moduleObj
 	}
 
-	reqFn := func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			panic(rt.vm.NewTypeError("require specifier required"))
+	// The module is the parent of anything it requires while its body runs.
+	rt.modStack = append(rt.modStack, moduleObj)
+	defer func() { rt.modStack = rt.modStack[:len(rt.modStack)-1] }()
+
+	reqFn := func(args []jit.Value) jit.Value {
+		if len(args) == 0 {
+			panic(jit.Err("TypeError", "require specifier required"))
 		}
-		v, err := rt.requireFrom(dir, call.Argument(0).String())
+		v, err := rt.requireFrom(dir, argsAt(args, 0).String())
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		return v
 	}
-	reqObj := rt.vm.NewObject()
-	resolveFn := func(call goja.FunctionCall) goja.Value {
-		spec := nodePrefix(call.Argument(0).String())
-		if isBuiltin(spec) || strings.HasPrefix(spec, "__") {
-			return rt.vm.ToValue(spec)
-		}
-		d := dir
-		if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
-			p := spec
-			if !filepath.IsAbs(p) {
-				p = filepath.Join(d, spec)
-			}
-			if r, ok := rt.resolveFile(p); ok {
-				return rt.vm.ToValue(r)
-			}
-		} else {
-			w := d
-			for {
-				if r, ok := rt.resolveNodeModules(filepath.Join(w, "node_modules"), spec); ok {
-					return rt.vm.ToValue(r)
-				}
-				parent := filepath.Dir(w)
-				if parent == w {
-					break
-				}
-				w = parent
-			}
-		}
-		panic(rt.vm.NewGoError(fmt.Errorf("Cannot find module '%s'", spec)))
-	}
-	reqObj.Set("resolve", resolveFn)
+	reqVal := jit.Host(&hostFunc{name: "require", call: reqFn})
+	rt.jit.SetGlobal("__donejsRequire", reqVal)
+	moduleObj.Set("require", reqVal)
+	reqVal.Set("main", rt.mainModule)
 
-	val, err := rt.vm.RunProgram(prg)
+	fn, err := rt.runModuleFn(prg)
 	if err != nil {
 		delete(rt.modCache, filename)
-		return nil, errors2(err)
+		return jit.Undef(), err
 	}
-	_ = val
-	fn, ok := goja.AssertFunction(val)
-	if !ok {
+	ret, err := rt.jit.CallBind(fn, jit.ObjVal(jit.NewObj()), moduleObj, reqVal, moduleObj, jit.Str(filename), jit.Str(dir))
+	if err != nil {
 		delete(rt.modCache, filename)
-		return nil, fmt.Errorf("%s: module wrapper did not produce a function", filename)
+		return jit.Undef(), err
 	}
-	this := rt.vm.NewObject()
-	req := rt.makeRequire(rt.vm.ToValue(reqFn), rt.vm.ToValue(resolveFn))
-	rt.modStack = append(rt.modStack, moduleObj)
-	defer func() { rt.modStack = rt.modStack[:len(rt.modStack)-1] }()
-	if _, err := fn(this, moduleObj.Get("exports"), req, moduleObj, rt.vm.ToValue(filename), rt.vm.ToValue(dir)); err != nil {
-		delete(rt.modCache, filename)
-		return nil, errors2(err)
-	}
+	_ = ret
 	ne := moduleObj.Get("exports")
 	mod.exports = ne
 	mod.loaded = true
-	moduleObj.Set("loaded", true)
+	moduleObj.Set("loaded", jit.Bool(true))
 	return ne, nil
+}
+
+// runModuleFn executes a compiled module wrapper and returns the exported
+// value.
+func (rt *Runtime) runModuleFn(prg *jit.FuncProto) (jit.Value, error) {
+	ret, err := rt.jit.CallProtoErr(prg)
+	if err != nil {
+		return jit.Undef(), errors.New(rt.formatErr(errToValue(err)))
+	}
+	if !ret.IsCallable() {
+		return jit.Undef(), fmt.Errorf("module wrapper did not produce a function")
+	}
+	return ret, nil
 }
 
 func errors2(err error) error {
@@ -265,14 +241,14 @@ func errors2(err error) error {
 }
 
 func rtFormat(err error) string {
-	if ex, ok := err.(*goja.Exception); ok {
-		return ex.String()
+	if ex, ok := err.(*jit.ThrowError); ok {
+		return ex.Error()
 	}
 	return err.Error()
 }
 
 // runBuiltin loads an embedded JS builtin module by name.
-func (rt *Runtime) runBuiltin(name string) (goja.Value, error) {
+func (rt *Runtime) runBuiltin(name string) (jit.Value, error) {
 	key := "@" + name
 	rt.mu.Lock()
 	if m, ok := rt.modCache[key]; ok {
@@ -282,7 +258,7 @@ func (rt *Runtime) runBuiltin(name string) (goja.Value, error) {
 	rt.mu.Unlock()
 	src, err := readBuiltin(name)
 	if err != nil {
-		return nil, err
+		return jit.Undef(), err
 	}
 	return rt.loadModuleText(key, src, rt.mainDir, false)
 }

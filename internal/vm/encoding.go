@@ -6,50 +6,50 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/dop251/goja"
+	"donejs/internal/jit"
 )
 
 // registerEncoding exposes byte/string conversions used by Buffer, fs and crypto.
 func (rt *Runtime) registerEncoding() {
-	enc := rt.vm.NewObject()
+	enc := jit.Object()
 
-	enc.Set("toBytes", func(call goja.FunctionCall) goja.Value {
-		s := call.Argument(0).String()
+	setFn(enc, "toBytes", func(args []jit.Value) jit.Value {
+		s := argsAt(args, 0).String()
 		encName := "utf8"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			encName = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			encName = args[1].String()
 		}
 		b, err := encodeString(s, encName)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
 		return rt.newUint8Array(b)
 	})
 
-	enc.Set("fromBytes", func(call goja.FunctionCall) goja.Value {
-		ab := rt.arrayBuffer(call.Argument(0))
+	setFn(enc, "fromBytes", func(args []jit.Value) jit.Value {
+		ab := rt.arrayBuffer(argsAt(args, 0))
 		encName := "utf8"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			encName = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			encName = args[1].String()
 		}
 		s, err := decodeBytes(ab, encName)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
-		return rt.vm.ToValue(s)
+		return jit.Str(s)
 	})
 
-	enc.Set("byteLength", func(call goja.FunctionCall) goja.Value {
-		s := call.Argument(0).String()
+	setFn(enc, "byteLength", func(args []jit.Value) jit.Value {
+		s := argsAt(args, 0).String()
 		encName := "utf8"
-		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
-			encName = call.Argument(1).String()
+		if len(args) > 1 && !args[1].IsUndef() {
+			encName = args[1].String()
 		}
 		b, err := encodeString(s, encName)
 		if err != nil {
-			panic(rt.vm.NewGoError(err))
+			panic(rt.jsThrow(err))
 		}
-		return rt.vm.ToValue(len(b))
+		return jit.Num(float64(len(b)))
 	})
 
 	rt.natives["__encoding"] = enc
@@ -92,16 +92,14 @@ func decodeBytes(b []byte, enc string) (string, error) {
 	case "", "utf8", "utf-8":
 		return string(b), nil
 	case "latin1", "binary":
-		var sb []byte
-		sb = append(sb, b...)
-		return string(sb), nil
+		return string(b), nil
 	case "ascii":
-		var sb []byte
-		for _, c := range b {
+		sb := make([]byte, len(b))
+		for i, c := range b {
 			if c > 0x7f {
 				c = '?'
 			}
-			sb = append(sb, c)
+			sb[i] = c
 		}
 		return string(sb), nil
 	case "utf16le", "ucs2", "ucs-2":
@@ -128,44 +126,26 @@ type unknownEncoding string
 
 func (u unknownEncoding) Error() string { return "unknown encoding: " + string(u) }
 
-var errUnknownEncoding = func(enc string) error { return unknownEncoding(enc) }
+func errUnknownEncoding(enc string) error { return unknownEncoding(enc) }
 
 var errTruncatedUTF16 = errUnknownEncoding("truncated utf16le")
 
 // arrayBuffer extracts the bytes behind a Buffer/ArrayBuffer/TypedArray argument.
-func (rt *Runtime) arrayBuffer(v goja.Value) []byte {
-	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+func (rt *Runtime) arrayBuffer(v jit.Value) []byte {
+	if v.IsUndef() || v.IsNull() {
 		return nil
 	}
+	if o := v.AsObj(); o != nil {
+		switch jit.KindOf(o) {
+		case jit.KindArrayBuffer, jit.KindUint8Array, jit.KindDataView:
+			return o.Bytes()
+		}
+	}
 	switch t := v.Export().(type) {
-	case goja.ArrayBuffer:
-		return t.Bytes()
+	case string:
+		return []byte(t)
 	case []byte:
 		return t
-	}
-	if o, ok := v.(*goja.Object); ok {
-		if buf := o.Get("buffer"); buf != nil && !goja.IsUndefined(buf) {
-			if ab, ok := buf.Export().(goja.ArrayBuffer); ok {
-				off := int64(0)
-				if b := o.Get("byteOffset"); b != nil && !goja.IsUndefined(b) {
-					off = b.ToInteger()
-				}
-				length := int64(len(ab.Bytes()))
-				if l := o.Get("byteLength"); l != nil && !goja.IsUndefined(l) {
-					length = l.ToInteger()
-				}
-				if off < 0 {
-					off = 0
-				}
-				if off+length > int64(len(ab.Bytes())) {
-					length = int64(len(ab.Bytes())) - off
-				}
-				if length <= 0 {
-					return nil
-				}
-				return ab.Bytes()[off : off+length]
-			}
-		}
 	}
 	return nil
 }
