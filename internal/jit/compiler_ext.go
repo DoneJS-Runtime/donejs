@@ -7,14 +7,11 @@ package jit
 // ---- for-of / for-in ----
 
 func (c *Compiler) forOf(n *ForOfStmt) {
-	if n.Async {
-		c.forOfAsync(n)
-		return
-	}
 	c.pushScope()
 	iterSlot := c.allocLocal("")
 	c.allocLocal("") // index
 	c.allocLocal("") // of-flag
+	c.allocLocal("") // protocol flag
 	c.expr(n.Right)
 	of := int32(0)
 	if n.Of {
@@ -52,18 +49,16 @@ func (c *Compiler) forOf(n *ForOfStmt) {
 	c.popScope()
 }
 
-// forOfAsync compiles `for await (const x of expr) body`. The iterator comes
-// from the well-known Symbol.iterator key; each iteration awaits the
-// iterator's `next()` result and reads its `{ value, done }` fields, so the
-// loop body runs after the microtask that settles each promise.
+// forOfAsync compiles `for await (const x of expr) body` on its own. The
+// iterable resolves to an iterator object, and each iteration awaits the
+// iterator's `next()` result, so the loop body runs after the microtask that
+// settles it.
 func (c *Compiler) forOfAsync(n *ForOfStmt) {
 	c.pushScope()
 	iterSlot := c.allocLocal("")
-	c.allocLocal("") // index
-	c.allocLocal("") // of-flag
+	valSlot := c.allocLocal("")
 	c.expr(n.Right)
-	c.emit(OpGetField, c.constIndex(Str(symIteratorKey)), 0)
-	c.emit(OpCallMethod, c.constIndex(Str(symIteratorKey+"\x00"+calleeDesc(n.Right)+"."+symIteratorKey)), 0)
+	c.emit(OpIterGet, 0, 0)
 	c.emit(OpAwait, 0, 0)
 	c.storeVar(iterSlot)
 	loop := len(c.cur.Code)
@@ -73,10 +68,10 @@ func (c *Compiler) forOfAsync(n *ForOfStmt) {
 	c.emit(OpAwait, 0, 0)
 	c.emit(OpDup, 0, 0)
 	c.emit(OpGetField, c.constIndex(Str("done")), 0)
-	jend := c.emit(OpJumpIfFalse, -1, 0)
-	c.emit(OpPop, 0, 0)
+	jend := c.emit(OpJumpIfTrue, -1, 0)
 	c.emit(OpGetField, c.constIndex(Str("value")), 0)
-	c.emit(OpPop, 0, 0)
+	c.emit(OpStoreLocal, valSlot, 0)
+	c.emit(OpLoadLocal, valSlot, 0)
 	switch t := n.Left.(type) {
 	case *VarDecl:
 		if len(t.Patterns) > 0 && t.Patterns[0] != nil {
@@ -97,9 +92,11 @@ func (c *Compiler) forOfAsync(n *ForOfStmt) {
 		c.patch(p, loop)
 	}
 	c.emit(OpJump, int32(loop), 0)
-	c.patch(jend, len(c.cur.Code))
+	end := len(c.cur.Code)
+	c.emit(OpPop, 0, 0)
+	c.patch(jend, end)
 	for _, p := range lc.breakPatches {
-		c.patch(p, len(c.cur.Code))
+		c.patch(p, end)
 	}
 	c.popScope()
 }

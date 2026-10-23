@@ -152,6 +152,11 @@ func (rt *Runtime) Loop() (code int) {
 				fn()
 			case <-t.C:
 			}
+		} else if rt.jit.HasJobs() {
+			// Engine jobs (promise reactions, awaited continuations) wake
+			// the loop through this branch, so it never blocks while one is
+			// pending.
+			continue
 		} else {
 			fn := <-rt.jobs
 			fn()

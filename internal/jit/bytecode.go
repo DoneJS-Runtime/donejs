@@ -87,6 +87,7 @@ const (
 	OpShl           // pop b, a; push ToInt32(a) << ToInt32(b)
 	OpShr           // pop b, a; push ToInt32(a) >> ToInt32(b)
 	OpYield         // pop v; suspend the generator frame, resume with the sent value
+	OpIterGet       // pop iterable -> push the Symbol.iterator object
 )
 
 type Instr struct {
@@ -108,6 +109,7 @@ var opNames = []string{
 	"LoadHeap", "StoreHeap", "LoadUpval", "StoreUpval",
 	"MakeClosure", "SelfFunc", "Await", "SetAccessor", "InstanceOf", "In",
 	"RegExp", "DeleteIndex", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Yield",
+	"IterGet",
 }
 
 func (o Op) String() string {

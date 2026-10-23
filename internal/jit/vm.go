@@ -49,6 +49,9 @@ type frame struct {
 	// promise is set on the activation of an async function: its return
 	// settles it and a suspended `await` hands the frame to a continuation.
 	promise *Promise
+	// gen names the generator this activation belongs to, so a suspended
+	// `await` can hand the frame back to it.
+	gen *jsGenerator
 }
 
 // tryFrame is an active try/catch handler inside a frame.
@@ -154,6 +157,7 @@ func recycle(f *frame) {
 	f.closure = nil
 	f.heap = nil // a live closure may still point into the old backing array
 	f.promise = nil
+	f.gen = nil
 	f.proto.Free = append(f.proto.Free, f)
 }
 
@@ -420,9 +424,21 @@ func (vm *VM) loop() (Value, error) {
 				// Await passes a non-promise through, but always yields to the
 				// microtask queue first (Node semantics): the code after the
 				// await never runs before the current synchronous work.
+				if g := f.gen; g != nil && !g.cp.Async {
+					// A sync generator cannot suspend on a non-promise: its
+					// caller drives it to the next yield synchronously.
+					st.push(v)
+					continue
+				}
 				resume := f
 				vm.frames = vm.frames[:len(vm.frames)-1]
-				vm.enqueue(func() { vm.resume(resume, v, false) })
+				if g := f.gen; g != nil {
+					g.awaiting = true
+					g.frame = f
+					vm.enqueue(func() { g.awaiting = false; vm.resume(resume, v, false) })
+				} else {
+					vm.enqueue(func() { vm.resume(resume, v, false) })
+				}
 				return Undef(), nil
 			}
 			switch p.state {
@@ -431,7 +447,18 @@ func (vm *VM) loop() (Value, error) {
 				// stack unwinds to whatever is still running.
 				resume := f
 				vm.frames = vm.frames[:len(vm.frames)-1]
-				p.subscribeFn(func(val Value, rej bool) { vm.resume(resume, val, rej) }, nil)
+				if g := f.gen; g != nil {
+					g.awaiting = true
+					g.frame = f
+					p.subscribeFn(func(val Value, rej bool) {
+						g.awaiting = false
+						if err := vm.resume(resume, val, rej); err != nil {
+							g.settleErr(err)
+						}
+					}, nil)
+				} else {
+					p.subscribeFn(func(val Value, rej bool) { vm.resume(resume, val, rej) }, nil)
+				}
 				return Undef(), nil
 			case rejected:
 				f.pending, f.pendingF = p.reason, true
@@ -784,8 +811,38 @@ func (vm *VM) loop() (Value, error) {
 			f.locals[int(in.A)] = iter
 			f.locals[int(in.A)+1] = Num(0)
 			f.locals[int(in.A)+2] = Num(float64(in.B))
+			f.locals[int(in.A)+3] = Num(0)
+			// Arrays, strings and typed views iterate by index; anything else
+			// goes through the Symbol.iterator protocol.
+			if !indexIterable(iter) {
+				if it, ite := vm.iteratorOf(iter); ite == nil {
+					f.locals[int(in.A)] = it
+					f.locals[int(in.A)+3] = Num(1)
+				} else {
+					f.pending, f.pendingF = ite.Value, true
+				}
+			}
 		case OpIterNext:
 			iterSlot := int(in.A)
+			if f.locals[iterSlot+3].toNumber() != 0 {
+				// Iterator protocol: one next() per iteration.
+				it := f.locals[iterSlot]
+				res, pushed, te := vm.callMethodValue(it, "next", "it.next", nil)
+				if te != nil {
+					f.pending, f.pendingF = te.Value, true
+					continue
+				}
+				if pushed {
+					continue
+				}
+				if ob := res.AsObj(); ob != nil && ob.get("done").truthy() {
+					continue // done: fall through to the loop exit
+				} else if ob != nil {
+					st.push(ob.get("value"))
+					f.pc = int(in.B)
+				}
+				continue
+			}
 			idxSlot := iterSlot + 1
 			of := f.locals[iterSlot+2].toNumber() != 0
 			i := int(f.locals[idxSlot].toNumber())
@@ -794,6 +851,13 @@ func (vm *VM) loop() (Value, error) {
 				f.locals[idxSlot] = Num(float64(i + 1))
 				f.pc = int(in.B)
 			}
+		case OpIterGet:
+			it, ite := vm.iteratorOf(st.pop())
+			if ite != nil {
+				f.pending, f.pendingF = ite.Value, true
+				continue
+			}
+			st.push(it)
 		case OpSliceFrom:
 			start := int(f.proto.Consts[in.A].toNumber())
 			v := st.pop()
@@ -970,9 +1034,10 @@ func (vm *VM) loop() (Value, error) {
 			// it until the next next() resumes it with the sent value.
 			f := vm.frames[len(vm.frames)-1]
 			vm.frames = vm.frames[:len(vm.frames)-1]
-			if vm.gen != nil {
+			if vm.gen != nil && f.gen == vm.gen {
 				vm.gen.frame = f
 				vm.gen.yielded = v
+				vm.gen.settle(v, false)
 			}
 			return v, nil
 		case OpReturn:
@@ -987,10 +1052,11 @@ func (vm *VM) loop() (Value, error) {
 			}
 			callee := vm.frames[len(vm.frames)-1]
 			vm.frames = vm.frames[:len(vm.frames)-1]
-			if vm.gen != nil {
+			if vm.gen != nil && callee.gen == vm.gen {
 				// The activation came from a generator drive, so it finished:
 				// the generator owns nothing until a later next() resumes it.
 				vm.gen.frame = nil
+				vm.gen.settle(v, true)
 			}
 			if callee.promise != nil {
 				// An async function settles its promise instead of returning
@@ -1231,8 +1297,10 @@ func (vm *VM) runAsync(cp *FuncProto, cl *Closure, nargs int, this Value, args [
 	vm.baseDepth = old
 }
 
-// resume continues a frame suspended on an `await`, as a microtask.
-func (vm *VM) resume(f *frame, v Value, rej bool) {
+// resume continues a frame suspended on an `await`, as a microtask. It
+// reports the error an uncaught throw produced, so a suspended generator can
+// settle its pending next() promise.
+func (vm *VM) resume(f *frame, v Value, rej bool) error {
 	vm.frames = append(vm.frames, f)
 	if rej {
 		f.pending, f.pendingF = v, true
@@ -1241,8 +1309,16 @@ func (vm *VM) resume(f *frame, v Value, rej bool) {
 	}
 	old := vm.baseDepth
 	vm.baseDepth = len(vm.frames) - 1
-	vm.loop()
+	// A resumed generator continuation drives its own frame, so yields and
+	// returns settle through it.
+	prev := vm.gen
+	if f.gen != nil {
+		vm.gen = f.gen
+	}
+	_, err := vm.loop()
+	vm.gen = prev
 	vm.baseDepth = old
+	return err
 }
 
 // callMethodValue dispatches `obj.name(args)`. It returns (result, false) for a
@@ -1689,6 +1765,49 @@ func (vm *VM) inProp(k Value, o Value) bool {
 	return false
 }
 
+// indexIterable reports whether v iterates by position, which the fast for-of
+// path handles without building an iterator.
+func indexIterable(v Value) bool {
+	if v.AsArr() != nil || v.tag == tStr {
+		return true
+	}
+	if o := v.AsObj(); o != nil {
+		return o.kind == kindU8 || o.kind == kindNone
+	}
+	return false
+}
+
+// iteratorOf resolves src to an iterator object. Arrays, strings and byte
+// views get a built-in iterator; anything else goes through the
+// Symbol.iterator protocol.
+func (vm *VM) iteratorOf(src Value) (Value, *ThrowError) {
+	switch {
+	case src.AsArr() != nil:
+		return Host(&iterHost{kind: iterArr, a: src.AsArr()}), nil
+	case src.tag == tStr:
+		return Host(&iterHost{kind: iterStr, s: src.AsStr()}), nil
+	case src.AsObj() != nil && src.AsObj().kind == kindU8:
+		o := src.AsObj()
+		return Host(&iterHost{kind: iterU8, w: o.window()}), nil
+	}
+	if _, ok := src.AsHost().(*jsGenerator); ok {
+		// A generator is its own iterator.
+		return src, nil
+	}
+	gv, gte := vm.getField(src, symIteratorKey)
+	if gte != nil {
+		return Undef(), gte
+	}
+	if !isCallable(gv) {
+		return Undef(), &ThrowError{Value: strErr("TypeError", src.toStr()+" is not iterable")}
+	}
+	it, err := vm.callThis(gv, Undef(), nil)
+	if err != nil {
+		return Undef(), asThrow(err)
+	}
+	return it, nil
+}
+
 // iterLen reports the number of elements iterated by for-of / for-in.
 func iterLen(v Value) int {
 	if a := v.AsArr(); a != nil {
@@ -1835,4 +1954,3 @@ func compare(a, b Value) int {
 	}
 	return 0
 }
-

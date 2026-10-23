@@ -52,7 +52,10 @@ func Selftest(w io.Writer) error {
 	})
 
 	check("core: async iteration", func() error {
-		return evalOK(rt, `
+		// evalAsyncOK drains the microtask queue, so the async generator's
+		// for-await loop has to have produced its values by the time it
+		// returns; the global it records is the assertion.
+		return evalAsyncOK(rt, `
 			async function* agen() { yield 1; let v = await Promise.resolve(2); yield v; }
 			async function main() {
 				let out = [];
@@ -61,6 +64,18 @@ func Selftest(w io.Writer) error {
 				globalThis.__asyncAgn = out.join(',');
 			}
 			main();
+		`)
+	})
+
+	check("core: yield delegation", func() error {
+		return evalOK(rt, `
+			function* g1() { yield 1; yield 2; }
+			function* g2() { yield* g1(); yield 10; }
+			const out = [...g2()];
+			if (out.join(',') !== '1,2,10') throw new Error('yield* got ' + out);
+			let s = [];
+			for (const x of g1()) s.push(x);
+			if (s.join(',') !== '1,2') throw new Error('for-of over generator got ' + s);
 		`)
 	})
 
@@ -566,6 +581,22 @@ func evalOK(rt *Runtime, src string) error {
 	name := "selftest-" + strconv.Itoa(selftestSeq)
 	if _, err := rt.RunString(name, "(function(){\n"+src+"\n})();"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// evalAsyncOK runs src and then drains the microtask queue, so code that
+// completes on later ticks (async functions, for-await) is finished before the
+// recorded global is checked.
+func evalAsyncOK(rt *Runtime, src string) error {
+	selftestSeq++
+	name := "selftest-" + strconv.Itoa(selftestSeq)
+	if _, err := rt.RunString(name, "(function(){\n"+src+"\n})();"); err != nil {
+		return err
+	}
+	rt.drainMicrotasks()
+	if got := rt.jit.GetGlobal("__asyncAgn").String(); got != "1,2" {
+		return fmt.Errorf("for await produced %q", got)
 	}
 	return nil
 }

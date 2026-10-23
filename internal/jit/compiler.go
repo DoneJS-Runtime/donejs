@@ -616,6 +616,12 @@ func (c *Compiler) stmt(s Stmt) {
 	case *LabeledStmt:
 		c.labeled(n)
 	case *ForOfStmt:
+		if n.Async {
+			// `for await` is compiled by its own path, over the
+			// Symbol.iterator protocol.
+			c.forOfAsync(n)
+			return
+		}
 		c.forOf(n)
 	case *SwitchStmt:
 		c.switchStmt(n)
@@ -897,12 +903,49 @@ func (c *Compiler) expr(e Expr) {
 		idx := c.addFunc(n)
 		c.emit(OpMakeClosure, idx, 0)
 	case *YieldExpr:
+		if n.Delegate {
+			c.yieldDelegate(n.X)
+			return
+		}
 		// `yield` suspends the generator frame; the sent value resumes here.
-		// The `yield*` delegation is not implemented yet: it lowers to a plain
-		// yield so bodies compile.
 		c.expr(n.X)
 		c.emit(OpYield, 0, 0)
 	}
+}
+
+// yieldDelegate compiles `yield* x`: drive the sub-iterator's next(), await
+// the { value, done } result, and yield each value until the sub-iterator is
+// done. Values forwarded this way are yielded by the delegating generator.
+func (c *Compiler) yieldDelegate(x Expr) {
+	c.pushScope()
+	iterSlot := c.allocLocal("")
+	valSlot := c.allocLocal("")
+	c.expr(x)
+	c.emit(OpIterGet, 0, 0)
+	c.emit(OpAwait, 0, 0)
+	c.storeVar(iterSlot)
+	loop := len(c.cur.Code)
+	c.loops = append(c.loops, loopCtx{start: loop})
+	c.loadVar(iterSlot)
+	c.emit(OpCallMethod, c.constIndex(Str("next\x00it.next")), 0)
+	c.emit(OpAwait, 0, 0)
+	c.emit(OpDup, 0, 0)
+	c.emit(OpGetField, c.constIndex(Str("done")), 0)
+	jend := c.emit(OpJumpIfTrue, -1, 0)
+	c.emit(OpGetField, c.constIndex(Str("value")), 0)
+	c.emit(OpStoreLocal, valSlot, 0)
+	c.emit(OpLoadLocal, valSlot, 0)
+	c.emit(OpYield, 0, 0)
+	c.emit(OpJump, int32(loop), 0)
+	end := len(c.cur.Code)
+	c.emit(OpPop, 0, 0)
+	c.patch(jend, end)
+	lc := c.loops[len(c.loops)-1]
+	c.loops = c.loops[:len(c.loops)-1]
+	for _, p := range lc.continuePatches {
+		c.patch(p, loop)
+	}
+	c.popScope()
 }
 
 func (c *Compiler) unary(n *UnaryExpr) {
