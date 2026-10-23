@@ -796,6 +796,27 @@ func (c *Compiler) expr(e Expr) {
 		if id, ok := n.Callee.(*Ident); ok && id.Name == "super" && c.curClass != nil {
 			c.expr(&ThisExpr{})
 			c.loadSuper()
+			spread := false
+			for _, a := range n.Args {
+				if _, ok := a.(*SpreadExpr); ok {
+					spread = true
+					break
+				}
+			}
+			if spread {
+				c.emit(OpNewArray, 0, 0)
+				for _, a := range n.Args {
+					if sp, ok := a.(*SpreadExpr); ok {
+						c.expr(sp.X)
+						c.emit(OpArrayPushAll, 0, 0)
+					} else {
+						c.expr(a)
+						c.emit(OpArrayPush, 0, 0)
+					}
+				}
+				c.emit(OpSuperCallDyn, 0, 0)
+				return
+			}
 			for _, a := range n.Args {
 				c.expr(a)
 			}
@@ -910,6 +931,8 @@ func (c *Compiler) expr(e Expr) {
 		c.optCall(n)
 	case *NewExpr:
 		c.newExpr(n)
+	case *NewTargetExpr:
+		c.emit(OpNewTarget, 0, 0)
 	case *FuncExpr:
 		idx := c.addFunc(n)
 		c.emit(OpMakeClosure, idx, 0)

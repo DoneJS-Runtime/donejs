@@ -451,7 +451,19 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 		ctor.Body = append(fieldInits, ctor.Body...)
 		cls.Ctor = Func(c.addMethodProto(ctor))
 	} else {
-		synthetic := &FuncExpr{Name: n.Name, Body: fieldInits}
+		body := fieldInits
+		params := []string(nil)
+		if n.Super != nil {
+			// A derived class with no explicit constructor forwards its
+			// arguments to the superclass, then initializes its own fields.
+			sup := &ExprStmt{X: &CallExpr{
+				Callee: &Ident{Name: "super"},
+				Args:   []Expr{&SpreadExpr{X: &Ident{Name: "args"}}},
+			}}
+			body = append([]Stmt{sup}, fieldInits...)
+			params = []string{restPrefix + "args"}
+		}
+		synthetic := &FuncExpr{Name: n.Name, Params: params, Body: body}
 		cls.Ctor = Func(c.addMethodProto(synthetic))
 	}
 

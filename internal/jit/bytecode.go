@@ -88,6 +88,8 @@ const (
 	OpShr           // pop b, a; push ToInt32(a) >> ToInt32(b)
 	OpYield         // pop v; suspend the generator frame, resume with the sent value
 	OpIterGet       // pop iterable -> push the Symbol.iterator object
+	OpNewTarget     // push the constructor the running function was called with
+	OpSuperCallDyn  // stack [this, super, argsArray]: call the super constructor
 )
 
 type Instr struct {
@@ -109,7 +111,7 @@ var opNames = []string{
 	"LoadHeap", "StoreHeap", "LoadUpval", "StoreUpval",
 	"MakeClosure", "SelfFunc", "Await", "SetAccessor", "InstanceOf", "In",
 	"RegExp", "DeleteIndex", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Yield",
-	"IterGet",
+	"IterGet", "NewTarget", "SuperCallDyn",
 }
 
 func (o Op) String() string {
@@ -142,7 +144,10 @@ type FuncProto struct {
 	HeapSlots []HeapSlot
 	Upvals    []UpvalSpec
 	NoThis    bool // arrow function: the frame has no `this` in slot 0
-	Async     bool // async function: returns a promise, may await
+	// ProtoObj is the lazily created `prototype` object of a function used as
+	// a constructor, shared by every closure of this prototype.
+	ProtoObj *Obj
+	Async    bool // async function: returns a promise, may await
 	Gen      bool // generator function: yields, returns a generator object
 }
 

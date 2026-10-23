@@ -41,6 +41,9 @@ type frame struct {
 	pending  Value // in-flight exception
 	pendingF bool
 	isCtor   bool
+	// newTarget is the constructor a `new` call reached this activation with,
+	// or undefined for a plain call. `new.target` reads it.
+	newTarget Value
 	// closure is the function value this activation was created from; its
 	// caps are the frame's upvalues. heap holds the locals of this activation
 	// that a nested function captured, one shared slot each.
@@ -902,6 +905,8 @@ func (vm *VM) loop() (Value, error) {
 			} else if in.A >= 0 && int(in.A) < len(f.locals) {
 				f.locals[int(in.A)] = v
 			}
+		case OpNewTarget:
+			st.push(f.newTarget)
 		case OpNew:
 			nargs := int(in.B)
 			base := st.sp - nargs
@@ -924,6 +929,24 @@ func (vm *VM) loop() (Value, error) {
 				}
 				cp, cl := cls.Ctor.FuncParts()
 				vm.pushFrame(cp, cl, nargs, ObjVal(obj), args, true, cls)
+				vm.frames[len(vm.frames)-1].newTarget = callee
+				continue
+			}
+			if cp, cl := callee.FuncParts(); cp != nil {
+				// A plain function used with `new`: allocate an object whose
+				// prototype is f.prototype and run the body with it as `this`.
+				if cp.Gen || cp.Async || cp.NoThis {
+					st.sp = base - 1
+					f.pending, f.pendingF = strErr("TypeError", "not a constructor"), true
+					continue
+				}
+				obj := NewObj()
+				obj.proto = vm.objectProto
+				if p, _ := vm.getField(callee, "prototype"); p.AsObj() != nil {
+					obj.proto = p.AsObj()
+				}
+				vm.pushFrame(cp, cl, nargs, ObjVal(obj), args, true, nil)
+				vm.frames[len(vm.frames)-1].newTarget = callee
 				continue
 			}
 			if bf := callee.AsBuiltin(); bf != nil {
@@ -975,6 +998,33 @@ func (vm *VM) loop() (Value, error) {
 				}
 				cp, cl := cls.Ctor.FuncParts()
 				vm.pushFrame(cp, cl, nargs, this, args, true, cls)
+				vm.frames[len(vm.frames)-1].newTarget = f.newTarget
+				continue
+			}
+			st.push(Undef())
+		case OpSuperCallDyn:
+			// stack: [this, super, argsArray]
+			av := st.pop()
+			sup := st.pop()
+			this := st.pop()
+			var args []Value
+			if a := av.AsArr(); a != nil {
+				args = a.elems
+			}
+			if cls := sup.AsClass(); cls != nil {
+				if cls.Native != nil {
+					if ob := this.AsObj(); ob != nil {
+						if te := cls.Native(ob, args); te != nil {
+							f.pending, f.pendingF = te.Value, true
+							continue
+						}
+						st.push(ObjVal(ob))
+						continue
+					}
+				}
+				cp, cl := cls.Ctor.FuncParts()
+				vm.pushFrame(cp, cl, len(args), this, args, true, cls)
+				vm.frames[len(vm.frames)-1].newTarget = f.newTarget
 				continue
 			}
 			st.push(Undef())
@@ -1086,6 +1136,11 @@ func (vm *VM) pushFrame(cp *FuncProto, cl *Closure, nargs int, thisVal Value, ar
 	nf.isCtor = isCtor
 	nf.args = args
 	nf.closure = cl
+	nf.newTarget = Undef()
+	if cp.NoThis && len(vm.frames) > 0 {
+		// An arrow inherits the enclosing function's `new.target`.
+		nf.newTarget = vm.frames[len(vm.frames)-1].newTarget
+	}
 	for i := range nf.locals {
 		nf.locals[i] = Undef()
 	}
@@ -1597,6 +1652,20 @@ func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 		}
 		return Undef(), nil
 	}
+	if cp := o.AsFunc(); cp != nil {
+		// A plain function's `prototype`, created on first use so instances
+		// made with `new` share it and `instanceof` can walk to it.
+		if name == "prototype" {
+			if cp.ProtoObj == nil {
+				po := NewObj()
+				po.proto = vm.objectProto
+				po.set("constructor", o)
+				cp.ProtoObj = po
+			}
+			return ObjVal(cp.ProtoObj), nil
+		}
+		return Undef(), nil
+	}
 	if o.tag == tObj {
 		if a := o.AsArr(); a != nil {
 			if name == "length" {
@@ -1656,6 +1725,12 @@ func (vm *VM) setField(o Value, name string, v Value) *ThrowError {
 			return te
 		}
 		cls.Static.set(name, v)
+		return nil
+	}
+	if cp := o.AsFunc(); cp != nil {
+		if name == "prototype" {
+			cp.ProtoObj = v.AsObj()
+		}
 		return nil
 	}
 	if o.tag == tObj {

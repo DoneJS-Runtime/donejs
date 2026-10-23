@@ -59,6 +59,10 @@ type NewExpr struct {
 	Args   []Expr
 }
 
+// NewTargetExpr is `new.target`: the constructor a call was made with, or
+// undefined for a plain call.
+type NewTargetExpr struct{}
+
 type MemberExpr struct {
 	Obj      Expr
 	Prop     Expr
@@ -341,6 +345,7 @@ func (*AssignExpr) node()     {}
 func (*CondExpr) node()       {}
 func (*CallExpr) node()       {}
 func (*NewExpr) node()        {}
+func (*NewTargetExpr) node()  {}
 func (*MemberExpr) node()     {}
 func (*OptMemberExpr) node()  {}
 func (*OptCallExpr) node()    {}
@@ -401,6 +406,7 @@ func (*AssignExpr) expr()     {}
 func (*CondExpr) expr()       {}
 func (*CallExpr) expr()       {}
 func (*NewExpr) expr()        {}
+func (*NewTargetExpr) expr()  {}
 func (*MemberExpr) expr()     {}
 func (*OptMemberExpr) expr()  {}
 func (*OptCallExpr) expr()    {}

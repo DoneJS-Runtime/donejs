@@ -1623,6 +1623,16 @@ func (p *parser) primary() (Expr, error) {
 			}
 			return &YieldExpr{X: x, Delegate: delegate}, nil
 		case "new":
+			if p.at(".") {
+				// `new.target`: the constructor the running function was
+				// called with, or undefined for a plain call.
+				p.next()
+				if p.cur().kind != tIdent || p.cur().val != "target" {
+					return nil, p.errf("expected target")
+				}
+				p.next()
+				return &NewTargetExpr{}, nil
+			}
 			callee, err := p.primary()
 			if err != nil {
 				return nil, err

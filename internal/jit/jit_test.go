@@ -171,6 +171,24 @@ print(Point.make(5, 6).dist());
 	}
 }
 
+func TestNewTarget(t *testing.T) {
+	src := `
+function Ctor() { this.t = new.target; return this; }
+class A { constructor() { this.t = new.target; return this; } }
+class B extends A { constructor() { super(); this.d = new.target; return this; } }
+function G() { return new.target; }
+print(new Ctor().t === Ctor);
+print(new A().t === A);
+print(new B().t === B);
+print(typeof new G());
+print(typeof new.target);
+`
+	want := "true\ntrue\ntrue\nfunction\nundefined\n"
+	if got := run(t, src); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestOptionalChaining(t *testing.T) {
 	cases := map[string]string{
 		"const o = {}; print(o?.x ?? 42);":            "42\n",

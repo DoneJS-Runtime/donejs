@@ -35,6 +35,13 @@ func Selftest(w io.Writer) error {
 			const out = [...g()];
 			if (A.make().x !== 1) throw new Error('private field');
 			if (out.join(',') !== '1,2') throw new Error('generator spread');
+			class Base { constructor() { this.nt = new.target; } }
+			class Derived extends Base {}
+			function F() { this.t = new.target; }
+			if (new Base().nt !== Base) throw new Error('new.target base');
+			if (new Derived().nt !== Derived) throw new Error('new.target derived');
+			if (new F().t !== F) throw new Error('new.target plain function');
+			if (new Derived() instanceof Derived !== true) throw new Error('derived instanceof');
 		`)
 	})
 
