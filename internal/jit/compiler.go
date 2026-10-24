@@ -677,7 +677,7 @@ func (c *Compiler) addFn(f *FuncExpr, arrow bool) int32 {
 	outerScopes := c.scopes
 	outerSelf := c.selfName
 	outerThis := c.thisSlot
-	np := &FuncProto{Name: f.Name, SuperSlot: -1, NoThis: arrow, Async: f.Async, Gen: f.Gen}
+	np := &FuncProto{Name: f.Name, SuperSlot: -1, NoThis: arrow, Async: f.Async, Gen: f.Gen, NoCtor: f.NoCtor}
 	c.funcs = append(c.funcs, np)
 	c.outerFns = append(c.outerFns, outerFn{scopes: c.scopes, proto: outer})
 	c.cur = np

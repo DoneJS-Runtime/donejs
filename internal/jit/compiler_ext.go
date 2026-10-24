@@ -443,6 +443,7 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 			continue
 		}
 		fn := c.addMethodProto(&m.Fn)
+		m.Fn.NoCtor = true
 		cls.Methods = append(cls.Methods, MethodSpec{Name: m.Name, Proto: fn, Static: m.Static, Kind: m.Kind})
 	}
 	if ctor != nil {

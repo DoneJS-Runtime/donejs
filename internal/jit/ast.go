@@ -105,6 +105,7 @@ type FuncExpr struct {
 	Body   []Stmt
 	Async  bool
 	Gen    bool
+	NoCtor bool // method / accessor / generator: not a constructor
 }
 
 // ArrowFunc is `(params) => body` / `x => expr`. Expression bodies are stored

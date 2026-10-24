@@ -917,7 +917,7 @@ func (p *parser) objectProps() ([]Prop, error) {
 				if err != nil {
 					return nil, err
 				}
-				props = append(props, Prop{Computed: true, KeyExpr: k, Method: true, Value: &FuncExpr{Name: "m", Params: params, Body: body, Async: async}})
+				props = append(props, Prop{Computed: true, KeyExpr: k, Method: true, Value: &FuncExpr{Name: "m", Params: params, Body: body, Async: async, NoCtor: true}})
 			} else {
 				if err := p.expect(":"); err != nil {
 					return nil, err
@@ -946,7 +946,7 @@ func (p *parser) objectProps() ([]Prop, error) {
 			if err != nil {
 				return nil, err
 			}
-			props = append(props, Prop{Key: akey, Method: true, Kind: kind, Value: &FuncExpr{Name: akey, Params: params, Body: body, Async: async}})
+			props = append(props, Prop{Key: akey, Method: true, Kind: kind, Value: &FuncExpr{Name: akey, Params: params, Body: body, Async: async, NoCtor: true}})
 			if !p.accept(",") {
 				break
 			}
@@ -976,7 +976,7 @@ func (p *parser) objectProps() ([]Prop, error) {
 			if err != nil {
 				return nil, err
 			}
-			props = append(props, Prop{Key: key, Method: true, Gen: gen, Value: &FuncExpr{Name: key, Params: params, Body: body, Async: async, Gen: gen}})
+			props = append(props, Prop{Key: key, Method: true, Gen: gen, Value: &FuncExpr{Name: key, Params: params, Body: body, Async: async, Gen: gen, NoCtor: true}})
 			if !p.accept(",") {
 				break
 			}

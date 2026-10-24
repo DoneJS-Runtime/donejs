@@ -42,10 +42,16 @@ func ArrVal(a *Arr) Value     { return Value{tag: tObj, ref: a} }
 func Func(f *FuncProto) Value { return Value{tag: tFunc, ref: f} }
 
 // Closure binds a function to the captured variables of the frame it was
-// created in. Functions with no captures are stored as a bare *FuncProto.
+// created in. Functions with no captures are still wrapped so each function
+// value gets its own `prototype` object, matching one function object per
+// evaluation in JavaScript.
 type Closure struct {
 	Proto *FuncProto
 	Caps  []*Value
+	// ProtoObj is this function object's own `prototype` object, created on
+	// first use. Distinct from every other function value of the same
+	// prototype.
+	ProtoObj *Obj
 }
 
 func ClosureVal(c *Closure) Value { return Value{tag: tFunc, ref: c} }

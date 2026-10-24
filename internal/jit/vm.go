@@ -935,7 +935,7 @@ func (vm *VM) loop() (Value, error) {
 			if cp, cl := callee.FuncParts(); cp != nil {
 				// A plain function used with `new`: allocate an object whose
 				// prototype is f.prototype and run the body with it as `this`.
-				if cp.Gen || cp.Async || cp.NoThis {
+				if cp.Gen || cp.Async || cp.NoThis || cp.NoCtor {
 					st.sp = base - 1
 					f.pending, f.pendingF = strErr("TypeError", "not a constructor"), true
 					continue
@@ -1176,13 +1176,10 @@ func (f *frame) cap(spec UpvalSpec) *Value {
 }
 
 // closureFor binds v (a bare function prototype) to the captures it needs,
-// resolving them against the frame creating it. Functions with no captures
-// stay as a bare *FuncProto, so the common path allocates nothing.
+// resolving them against the frame creating it. Every value becomes a fresh
+// closure so each function object carries its own identity and `prototype`.
 func (f *frame) closureFor(v Value) Value {
-	cp, existing := v.FuncParts()
-	if existing != nil || cp == nil || len(cp.Upvals) == 0 {
-		return v
-	}
+	cp, _ := v.FuncParts()
 	caps := make([]*Value, len(cp.Upvals))
 	for i, sp := range cp.Upvals {
 		caps[i] = f.cap(sp)
@@ -1621,6 +1618,15 @@ func callDesc(s string) string {
 	return s
 }
 
+// newFnPrototype builds the `prototype` object of a function value: a plain
+// object inheriting Object.prototype with a back-reference to the function.
+func newFnPrototype(vm *VM, fn Value) *Obj {
+	po := NewObj()
+	po.proto = vm.objectProto
+	po.set("constructor", fn)
+	return po
+}
+
 func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 	if hv := o.AsHost(); hv != nil {
 		v, te := tryHost(func() Value { return hv.Get(name) })
@@ -1652,17 +1658,22 @@ func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 		}
 		return Undef(), nil
 	}
-	if cp := o.AsFunc(); cp != nil {
+	if cp, cl := o.FuncParts(); cp != nil {
 		// A plain function's `prototype`, created on first use so instances
-		// made with `new` share it and `instanceof` can walk to it.
+		// made with `new` share it and `instanceof` can walk to it. Each
+		// function value is a closure with its own prototype object.
 		if name == "prototype" {
-			if cp.ProtoObj == nil {
-				po := NewObj()
-				po.proto = vm.objectProto
-				po.set("constructor", o)
-				cp.ProtoObj = po
+			owner := cp.ProtoObj
+			if cl != nil {
+				if cl.ProtoObj == nil {
+					cl.ProtoObj = newFnPrototype(vm, o)
+				}
+				owner = cl.ProtoObj
+			} else if owner == nil {
+				cp.ProtoObj = newFnPrototype(vm, o)
+				owner = cp.ProtoObj
 			}
-			return ObjVal(cp.ProtoObj), nil
+			return ObjVal(owner), nil
 		}
 		return Undef(), nil
 	}
@@ -1727,9 +1738,13 @@ func (vm *VM) setField(o Value, name string, v Value) *ThrowError {
 		cls.Static.set(name, v)
 		return nil
 	}
-	if cp := o.AsFunc(); cp != nil {
+	if cp, cl := o.FuncParts(); cp != nil {
 		if name == "prototype" {
-			cp.ProtoObj = v.AsObj()
+			if cl != nil {
+				cl.ProtoObj = v.AsObj()
+			} else {
+				cp.ProtoObj = v.AsObj()
+			}
 		}
 		return nil
 	}

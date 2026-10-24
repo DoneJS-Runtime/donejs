@@ -144,8 +144,12 @@ type FuncProto struct {
 	HeapSlots []HeapSlot
 	Upvals    []UpvalSpec
 	NoThis    bool // arrow function: the frame has no `this` in slot 0
+	// NoCtor marks a function value that cannot be used with `new`: methods,
+	// accessors, generators and async functions.
+	NoCtor bool
 	// ProtoObj is the lazily created `prototype` object of a function used as
-	// a constructor, shared by every closure of this prototype.
+	// a constructor. Stays on the bare prototype for the fallback path; each
+	// *Closure that wraps it keeps its own copy.
 	ProtoObj *Obj
 	Async    bool // async function: returns a promise, may await
 	Gen      bool // generator function: yields, returns a generator object

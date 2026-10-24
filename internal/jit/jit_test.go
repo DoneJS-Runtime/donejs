@@ -182,8 +182,17 @@ print(new A().t === A);
 print(new B().t === B);
 print(typeof new G());
 print(typeof new.target);
+class M { m() { return 1 } }
+const OM = { m() { return 1 } };
+try { new OM.m(); } catch (e) { print(e.name); }
+if (new M().m() !== 1) throw new Error('method call');
+function make() { return function inner(a) { this.a = a; }; }
+const f1 = make();
+const f2 = make();
+if (f1.prototype === f2.prototype) throw new Error('shared prototype');
+print(new f1(1).a);
 `
-	want := "true\ntrue\ntrue\nfunction\nundefined\n"
+	want := "true\ntrue\ntrue\nfunction\nundefined\nTypeError\n1\n"
 	if got := run(t, src); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
