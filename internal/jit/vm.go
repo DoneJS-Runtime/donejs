@@ -1064,6 +1064,10 @@ func (vm *VM) loop() (Value, error) {
 					}
 				}
 			}
+			// The class's prototype owns a back-reference to the constructor.
+			if cls != nil && cls.Proto != nil {
+				cls.Proto.set("constructor", ClassVal(cls))
+			}
 			st.push(ClassVal(cls))
 		case OpRegExp:
 			flags := f.proto.Consts[int(in.B)].toStr()
@@ -1661,8 +1665,12 @@ func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 	if cp, cl := o.FuncParts(); cp != nil {
 		// A plain function's `prototype`, created on first use so instances
 		// made with `new` share it and `instanceof` can walk to it. Each
-		// function value is a closure with its own prototype object.
+		// function value is a closure with its own prototype object. Arrows,
+		// async functions and methods have no `prototype` at all.
 		if name == "prototype" {
+			if cp.NoThis || cp.Async || (cp.NoCtor && !cp.Gen) {
+				return Undef(), nil
+			}
 			owner := cp.ProtoObj
 			if cl != nil {
 				if cl.ProtoObj == nil {
@@ -1739,7 +1747,7 @@ func (vm *VM) setField(o Value, name string, v Value) *ThrowError {
 		return nil
 	}
 	if cp, cl := o.FuncParts(); cp != nil {
-		if name == "prototype" {
+		if name == "prototype" && !(cp.NoThis || cp.Async || (cp.NoCtor && !cp.Gen)) {
 			if cl != nil {
 				cl.ProtoObj = v.AsObj()
 			} else {

@@ -442,8 +442,8 @@ func (c *Compiler) classDecl(n *ClassDecl) {
 			ctor = &m.Fn
 			continue
 		}
-		fn := c.addMethodProto(&m.Fn)
 		m.Fn.NoCtor = true
+		fn := c.addMethodProto(&m.Fn)
 		cls.Methods = append(cls.Methods, MethodSpec{Name: m.Name, Proto: fn, Static: m.Static, Kind: m.Kind})
 	}
 	if ctor != nil {
@@ -504,7 +504,7 @@ func (c *Compiler) addMethodProto(f *FuncExpr) *FuncProto {
 	outerSelf := c.selfName
 	outerThis := c.thisSlot
 	outerSuper := c.superSlot
-	np := &FuncProto{Name: f.Name, SuperSlot: -1}
+	np := &FuncProto{Name: f.Name, SuperSlot: -1, NoCtor: f.NoCtor}
 	c.funcs = append(c.funcs, np)
 	c.outerFns = append(c.outerFns, outerFn{scopes: c.scopes, proto: outer})
 	c.cur = np
