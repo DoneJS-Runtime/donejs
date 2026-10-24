@@ -17,7 +17,7 @@ donejs -e "console.log(process.argv)"
 ## Build
 
 ```sh
-go build -o donejs .
+./build.sh               # builds ./donejs (go build -o donejs .)
 go test ./...            # unit tests
 ./donejs --selftest      # 38 runtime API checks
 ```
@@ -130,8 +130,11 @@ await`, spread, template literals and tagged templates (`String.raw`), `try`/
 `catch`, BigInt, optional chaining, logical assignment (`||=`, `&&=`, `??=`),
 array elisions (`[,,1]`), numeric literals (binary, octal, digit separators,
 BigInt) and ES modules - and the host bridge is a tagged value model, not the
-full ES object model. `new` works on plain functions and classes, and
-`new.target` reports the constructor. Output goes through `print`/`console.log`.
+full ES object model. `new` works on plain functions and classes; every function
+value is a closure with its own `prototype` object, `new.target` reports the
+constructor, and `new` on anything that is not a constructor (method, accessor,
+arrow, async or generator function) raises `TypeError`. Output goes through
+`print`/`console.log`.
 
 ## Security
 
