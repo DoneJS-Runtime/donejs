@@ -1,6 +1,9 @@
 package jit
 
-import "sort"
+import (
+	"math"
+	"sort"
+)
 
 // Compiler lowers the AST to the bytecode in bytecode.go. Locals are resolved
 // to slots at compile time, so the VM never does a name lookup for them.
@@ -773,6 +776,31 @@ func (c *Compiler) expr(e Expr) {
 	case *UnaryExpr:
 		c.unary(n)
 	case *BinaryExpr:
+		// Constant fold numeric binary literals: `2 + 3` becomes a const.
+		if x, ok := n.X.(*NumberLit); ok {
+			if y, ok := n.Y.(*NumberLit); ok {
+				switch n.Op {
+				case "+":
+					c.emit(OpConst, c.constIndex(Num(x.Value + y.Value)), 0)
+					return
+				case "-":
+					c.emit(OpConst, c.constIndex(Num(x.Value - y.Value)), 0)
+					return
+				case "*":
+					c.emit(OpConst, c.constIndex(Num(x.Value * y.Value)), 0)
+					return
+				case "/":
+					c.emit(OpConst, c.constIndex(Num(x.Value / y.Value)), 0)
+					return
+				case "%":
+					c.emit(OpConst, c.constIndex(Num(math.Mod(x.Value, y.Value))), 0)
+					return
+				case "**":
+					c.emit(OpConst, c.constIndex(Num(math.Pow(x.Value, y.Value))), 0)
+					return
+				}
+			}
+		}
 		c.expr(n.X)
 		c.expr(n.Y)
 		c.emit(c.binOp(n.Op), 0, 0)
