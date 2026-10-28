@@ -777,6 +777,7 @@ func (c *Compiler) expr(e Expr) {
 		c.unary(n)
 	case *BinaryExpr:
 		// Constant fold numeric binary literals: `2 + 3` becomes a const.
+		// Also fold string concatenations and numeric comparisons.
 		if x, ok := n.X.(*NumberLit); ok {
 			if y, ok := n.Y.(*NumberLit); ok {
 				switch n.Op {
@@ -797,6 +798,42 @@ func (c *Compiler) expr(e Expr) {
 					return
 				case "**":
 					c.emit(OpConst, c.constIndex(Num(math.Pow(x.Value, y.Value))), 0)
+					return
+				}
+			}
+		}
+		if s1, ok := n.X.(*StringLit); ok {
+			if s2, ok := n.Y.(*StringLit); ok && n.Op == "+" {
+				c.emit(OpConst, c.constIndex(Str(s1.Value + s2.Value)), 0)
+				return
+			}
+		}
+		if x, ok := n.X.(*NumberLit); ok {
+			if y, ok := n.Y.(*NumberLit); ok {
+				switch n.Op {
+				case "==":
+					c.emit(OpConst, c.constIndex(Bool(x.Value == y.Value)), 0)
+					return
+				case "!=":
+					c.emit(OpConst, c.constIndex(Bool(x.Value != y.Value)), 0)
+					return
+				case "===":
+					c.emit(OpConst, c.constIndex(Bool(x.Value == y.Value)), 0)
+					return
+				case "!==":
+					c.emit(OpConst, c.constIndex(Bool(x.Value != y.Value)), 0)
+					return
+				case "<":
+					c.emit(OpConst, c.constIndex(Bool(x.Value < y.Value)), 0)
+					return
+				case ">":
+					c.emit(OpConst, c.constIndex(Bool(x.Value > y.Value)), 0)
+					return
+				case "<=":
+					c.emit(OpConst, c.constIndex(Bool(x.Value <= y.Value)), 0)
+					return
+				case ">=":
+					c.emit(OpConst, c.constIndex(Bool(x.Value >= y.Value)), 0)
 					return
 				}
 			}
@@ -1011,6 +1048,27 @@ func (c *Compiler) yieldDelegate(x Expr) {
 }
 
 func (c *Compiler) unary(n *UnaryExpr) {
+	// Constant-fold unary operations over literals: `-5`, `+3`, `!flag`.
+	if num, ok := n.X.(*NumberLit); ok {
+		switch n.Op {
+		case "-":
+			c.emit(OpConst, c.constIndex(Num(-num.Value)), 0)
+			return
+		case "+":
+			c.emit(OpConst, c.constIndex(Num(num.Value)), 0)
+			return
+		case "~":
+			// JS bitwise not of an int32: ~x === -x - 1.
+			c.emit(OpConst, c.constIndex(Num(-num.Value-1)), 0)
+			return
+		}
+	}
+	if bl, ok := n.X.(*BoolLit); ok {
+		if n.Op == "!" {
+			c.emit(OpConst, c.constIndex(Bool(!bl.Value)), 0)
+			return
+		}
+	}
 	switch n.Op {
 	case "-":
 		c.expr(n.X)
