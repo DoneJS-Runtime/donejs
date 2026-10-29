@@ -807,6 +807,19 @@ func (c *Compiler) expr(e Expr) {
 				c.emit(OpConst, c.constIndex(Str(s1.Value + s2.Value)), 0)
 				return
 			}
+			if s2, ok := n.Y.(*StringLit); ok {
+				switch n.Op {
+				case "==", "===":
+					c.emit(OpConst, c.constIndex(Bool(s1.Value == s2.Value)), 0)
+					return
+				case "!=":
+					c.emit(OpConst, c.constIndex(Bool(s1.Value != s2.Value)), 0)
+					return
+				case "!==":
+					c.emit(OpConst, c.constIndex(Bool(s1.Value != s2.Value)), 0)
+					return
+				}
+			}
 		}
 		if x, ok := n.X.(*NumberLit); ok {
 			if y, ok := n.Y.(*NumberLit); ok {
