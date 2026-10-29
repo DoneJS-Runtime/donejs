@@ -223,8 +223,13 @@ func (a *Arr) set(i int, v Value) {
 		a.elems[i] = v
 		return
 	}
-	// Assigning past the end grows the array, the way JS does.
-	na := NewArr(i + 1)
+	// Assigning past the end grows the array, the way JS does. Grow
+	// geometrically so long appends do not reallocate-and-copy per write.
+	n := i + 1
+	if len(a.elems) > 0 && n < len(a.elems)*2 {
+		n = len(a.elems) * 2
+	}
+	na := NewArr(n)
 	copy(na.elems, a.elems)
 	na.elems[i] = v
 	a.elems = na.elems
