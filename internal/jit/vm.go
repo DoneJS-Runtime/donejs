@@ -98,6 +98,9 @@ type VM struct {
 	// gen is the generator currently being driven by a next()/return()/throw;
 	// its suspended activation lives in gen.frame.
 	gen *jsGenerator
+	// scratch holds the key/value pair buffer OpMakeObject pops constants
+	// through; it is reused so object literals stop allocating per evaluation.
+	scratch []Value
 }
 
 // lookupGlobal resolves a global, preferring the host's, then the interpreter's.
@@ -700,7 +703,12 @@ func (vm *VM) loop() (Value, error) {
 			o.proto = vm.objectProto
 			// The key/value pairs sit on the stack in source order; pop them
 			// into a buffer and replay forwards so insertion order is kept.
-			pairs := make([]Value, 2*n)
+			pairs := vm.scratch
+			if cap(pairs) < 2*n {
+				pairs = make([]Value, 2 * n)
+				vm.scratch = pairs
+			}
+			pairs = pairs[:2*n]
 			for i := 2*n - 1; i >= 0; i-- {
 				pairs[i] = st.pop()
 			}
