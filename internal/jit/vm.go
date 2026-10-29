@@ -2044,6 +2044,15 @@ func compare(a, b Value) int {
 		}
 		return 0
 	}
+	if a.tag == tNum && b.tag == tNum {
+		if a.n < b.n {
+			return -1
+		}
+		if a.n > b.n {
+			return 1
+		}
+		return 0
+	}
 	x, y := a.toNumber(), b.toNumber()
 	if math.IsNaN(x) || math.IsNaN(y) {
 		return -2
