@@ -82,6 +82,14 @@ func (rt *Runtime) fireDueTimers() {
 		if len(due) == 0 {
 			return
 		}
+		if len(due) > 1 {
+			sort.Slice(due, func(i, j int) bool {
+				if due[i].when.Equal(due[j].when) {
+					return due[i].id < due[j].id
+				}
+				return due[i].when.Before(due[j].when)
+			})
+		}
 		for _, t := range due {
 			if rt.exitingNow() {
 				return
