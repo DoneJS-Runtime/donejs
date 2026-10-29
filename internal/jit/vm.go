@@ -1993,9 +1993,10 @@ func strictEq(a, b Value) bool {
 	if a.tag != b.tag {
 		return false
 	}
-	switch a.tag {
-	case tNum:
+	if a.tag == tNum {
 		return a.n == b.n
+	}
+	switch a.tag {
 	case tStr:
 		return a.AsStr() == b.AsStr()
 	case tBool:
