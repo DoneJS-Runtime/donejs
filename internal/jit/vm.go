@@ -932,8 +932,7 @@ func (vm *VM) loop() (Value, error) {
 			nargs := int(in.B)
 			base := st.sp - nargs
 			callee := st.s[base-1]
-			args := make([]Value, nargs)
-			copy(args, st.s[base:st.sp])
+			args := st.s[base:st.sp]
 			if cls := callee.AsClass(); cls != nil {
 				obj := NewObj()
 				obj.class = cls
@@ -1002,8 +1001,7 @@ func (vm *VM) loop() (Value, error) {
 			base := st.sp - nargs
 			this := st.s[base-2]
 			sup := st.s[base-1]
-			args := make([]Value, nargs)
-			copy(args, st.s[base:st.sp])
+			args := st.s[base:st.sp]
 			st.sp = base - 2
 			if cls := sup.AsClass(); cls != nil {
 				if cls.Native != nil {
