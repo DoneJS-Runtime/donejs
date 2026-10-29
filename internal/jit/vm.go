@@ -560,7 +560,11 @@ func (vm *VM) loop() (Value, error) {
 			a := st.pop()
 			st.push(Bool(compare(a, b) >= 0))
 		case OpJump:
-			f.pc = int(in.A)
+			// A jump whose target is the next instruction never changes the PC;
+			// folding it away removes a dispatch round-trip on hot loops.
+			if int(in.A) != f.pc {
+				f.pc = int(in.A)
+			}
 		case OpJumpIfFalse:
 			if !st.pop().truthy() {
 				f.pc = int(in.A)
