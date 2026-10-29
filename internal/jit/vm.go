@@ -91,6 +91,9 @@ type VM struct {
 	out       func(string)
 	baseDepth int
 	jobs      []func() // microtasks: promise reactions and awaited continuations
+	// jobHead is the read cursor into jobs; consumed slots are skipped so the
+	// queue does not reslice (and reallocate) on every drain.
+	jobHead  int
 	// GlobalLookup resolves a global name the interpreter does not own itself.
 	// A host runtime (internal/vm) uses this to expose its own globals —
 	// console, process, require, … — to entry scripts without copying them.
@@ -314,16 +317,18 @@ func (vm *VM) enqueue(fn func()) { vm.jobs = append(vm.jobs, fn) }
 // RunJobs runs queued microtasks — promise reactions and resumed `await`s —
 // until none remain. The host event loop calls this after each macrotask.
 func (vm *VM) RunJobs() {
-	for len(vm.jobs) > 0 {
-		fn := vm.jobs[0]
-		vm.jobs = vm.jobs[1:]
+	for len(vm.jobs) > vm.jobHead {
+		fn := vm.jobs[vm.jobHead]
+		vm.jobHead++
 		fn()
 	}
+	vm.jobHead = 0
+	vm.jobs = vm.jobs[:0]
 }
 
 // HasJobs reports whether microtasks are still waiting, so a host loop can
 // stay alive until they finish.
-func (vm *VM) HasJobs() bool { return len(vm.jobs) > 0 }
+func (vm *VM) HasJobs() bool { return len(vm.jobs) > vm.jobHead }
 
 // errObjFor builds an error object for a builtin error constructor.
 func errObjFor(bf *builtin, msg string) Value {
@@ -1460,9 +1465,9 @@ func (vm *VM) callMethodValue(obj Value, name, desc string, args []Value) (Value
 			if b := m.AsBuiltin(); b != nil && b.recvFirst {
 				// A prototype method takes the receiver first, so
 				// `obj.hasOwnProperty(key)` reads as fn(obj, key).
-				all := make([]Value, 0, len(args)+1)
-				all = append(all, obj)
-				all = append(all, args...)
+				all := make([]Value, len(args)+1)
+				all[0] = obj
+				copy(all[1:], args)
 				r, te := vm.callBuiltin(Value{tag: tFunc, ref: b}, all)
 				return r, false, te
 			}
@@ -1509,11 +1514,9 @@ func (vm *VM) callMethodValue(obj Value, name, desc string, args []Value) (Value
 				}
 			}
 			if b.recvFirst {
-				all := make([]Value, 0, len(argVals)+1)
-				if len(args) > 0 {
-					all = append(all, args[0])
-				}
-				all = append(all, argVals...)
+				all := make([]Value, len(argVals)+1)
+				all[0] = obj
+				copy(all[1:], argVals)
 				v, te := tryHost(func() Value { return b.fn(all) })
 				return v, false, te
 			}
@@ -1525,11 +1528,9 @@ func (vm *VM) callMethodValue(obj Value, name, desc string, args []Value) (Value
 				argVals = args[1:]
 			}
 			if b.recvFirst {
-				all := make([]Value, 0, len(argVals)+1)
-				if len(args) > 0 {
-					all = append(all, args[0])
-				}
-				all = append(all, argVals...)
+				all := make([]Value, len(argVals)+1)
+				all[0] = obj
+				copy(all[1:], argVals)
 				v, te := tryHost(func() Value { return b.fn(all) })
 				return v, false, te
 			}
