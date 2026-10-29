@@ -3,6 +3,7 @@ package jit
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -98,6 +99,9 @@ type VM struct {
 	// gen is the generator currently being driven by a next()/return()/throw;
 	// its suspended activation lives in gen.frame.
 	gen *jsGenerator
+	// regCache memoizes compiled regexps by "pattern\u0000flags" so repeated
+	// `new RegExp` / literal construction does not recompile each time.
+	regCache map[string]*regexp.Regexp
 	// scratch holds the key/value pair buffer OpMakeObject pops constants
 	// through; it is reused so object literals stop allocating per evaluation.
 	scratch []Value
@@ -116,8 +120,9 @@ func (vm *VM) lookupGlobal(name string) (Value, bool) {
 
 func NewVM() *VM {
 	vm := &VM{
-		globals: map[string]Value{},
-		out:     func(s string) { fmt.Println(s) },
+		globals:  map[string]Value{},
+		out:      func(s string) { fmt.Println(s) },
+		regCache: map[string]*regexp.Regexp{},
 	}
 	vm.objectProto = NewObj()
 	vm.installGlobals()

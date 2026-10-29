@@ -28,10 +28,15 @@ type regExpVal struct {
 
 // NewRegExp builds a RegExp instance for a pattern and flags.
 func (vm *VM) NewRegExp(pattern, flags string) Value {
+	key := pattern + "\x00" + flags
+	if re, ok := vm.regCache[key]; ok {
+		return Host(&regExpVal{src: pattern, flags: flags, re: re})
+	}
 	h := &regExpVal{src: pattern, flags: flags}
 	h.mu.Lock()
 	h.re, h.compErr = regexp.Compile(jsPattern(pattern))
 	h.mu.Unlock()
+	vm.regCache[key] = h.re
 	return Host(h)
 }
 
