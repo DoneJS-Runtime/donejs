@@ -207,6 +207,9 @@ func parseNum(s string) float64 {
 
 // add implements the + operator (string concat or numeric add).
 func add(a, b Value) Value {
+	if a.tag == tStr && b.tag == tStr {
+		return Str(a.AsStr() + b.AsStr())
+	}
 	if a.tag == tStr || b.tag == tStr {
 		return Str(a.toStr() + b.toStr())
 	}
