@@ -16,7 +16,12 @@ type stack struct {
 
 func (s *stack) push(v Value) {
 	if s.sp >= len(s.s) {
-		s.s = append(s.s, make([]Value, 8)...)
+		n := len(s.s) + 8
+		if cap(s.s) >= n {
+			s.s = s.s[:n]
+		} else {
+			s.s = append(s.s, make([]Value, 8)...)
+		}
 	}
 	s.s[s.sp] = v
 	s.sp++
