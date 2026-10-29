@@ -337,14 +337,14 @@ func (vm *VM) Run(src string) (Value, error) {
 	}
 	proto := NewCompiler().Compile(p)
 	vm.frames = vm.frames[:0]
-	vm.frames = append(vm.frames, newFrame(proto))
+	vm.frames = append(vm.frames, frameFor(proto))
 	return vm.loop()
 }
 
 // RunProto executes an already-compiled prototype with the given arguments.
 func (vm *VM) RunProto(proto *FuncProto, args ...Value) (Value, error) {
 	vm.frames = vm.frames[:0]
-	f := newFrame(proto)
+	f := frameFor(proto)
 	for i := 0; i < len(args) && i+int(proto.ParamBase) < len(f.locals); i++ {
 		f.locals[i+int(proto.ParamBase)] = args[i]
 	}
