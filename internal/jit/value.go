@@ -216,6 +216,46 @@ func add(a, b Value) Value {
 	return Num(a.toNumber() + b.toNumber())
 }
 
+// sub implements the - operator (numeric sub, string concat fallback n/a).
+func sub(a, b Value) Value {
+	if a.tag == tNum && b.tag == tNum {
+		return Num(a.n - b.n)
+	}
+	return Num(a.toNumber() - b.toNumber())
+}
+
+// mul implements the * operator.
+func mul(a, b Value) Value {
+	if a.tag == tNum && b.tag == tNum {
+		return Num(a.n * b.n)
+	}
+	return Num(a.toNumber() * b.toNumber())
+}
+
+// div implements the / operator.
+func div(a, b Value) Value {
+	if a.tag == tNum && b.tag == tNum {
+		return Num(a.n / b.n)
+	}
+	return Num(a.toNumber() / b.toNumber())
+}
+
+// mod implements the % operator.
+func mod(a, b Value) Value {
+	if a.tag == tNum && b.tag == tNum {
+		return Num(math.Mod(a.n, b.n))
+	}
+	return Num(math.Mod(a.toNumber(), b.toNumber()))
+}
+
+// pow implements the ** operator.
+func pow(a, b Value) Value {
+	if a.tag == tNum && b.tag == tNum {
+		return Num(math.Pow(a.n, b.n))
+	}
+	return Num(math.Pow(a.toNumber(), b.toNumber()))
+}
+
 func (v Value) toStr() string {
 	switch v.tag {
 	case tUndef:

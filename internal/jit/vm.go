@@ -497,23 +497,23 @@ func (vm *VM) loop() (Value, error) {
 		case OpSub:
 			b := st.pop()
 			a := st.pop()
-			st.push(Num(a.toNumber() - b.toNumber()))
+			st.push(sub(a, b))
 		case OpMul:
 			b := st.pop()
 			a := st.pop()
-			st.push(Num(a.toNumber() * b.toNumber()))
+			st.push(mul(a, b))
 		case OpDiv:
 			b := st.pop()
 			a := st.pop()
-			st.push(Num(a.toNumber() / b.toNumber()))
+			st.push(div(a, b))
 		case OpMod:
 			b := st.pop()
 			a := st.pop()
-			st.push(Num(math.Mod(a.toNumber(), b.toNumber())))
+			st.push(mod(a, b))
 		case OpPow:
 			b := st.pop()
 			a := st.pop()
-			st.push(Num(math.Pow(a.toNumber(), b.toNumber())))
+			st.push(pow(a, b))
 		case OpNeg:
 			st.push(Num(-st.pop().toNumber()))
 		case OpNot:
