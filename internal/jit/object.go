@@ -244,11 +244,19 @@ var arrayMethods = []string{
 	"keys", "values",
 }
 
+// arrayMethodByName indexes the array method names once so lookups are a
+// single hash instead of a linear scan per property access.
+var arrayMethodByName = func() map[string]int {
+	m := make(map[string]int, len(arrayMethods))
+	for i, n := range arrayMethods {
+		m[n] = i
+	}
+	return m
+}()
+
 func arrayMethod(name string) int {
-	for i, m := range arrayMethods {
-		if m == name {
-			return i
-		}
+	if idx, ok := arrayMethodByName[name]; ok {
+		return idx
 	}
 	return -1
 }
