@@ -273,6 +273,16 @@ func (v Value) toStr() string {
 		return v.ref.(string)
 	case tObj:
 		if a, ok := v.ref.(*Arr); ok {
+			if len(a.elems) == 0 {
+				return ""
+			}
+			if len(a.elems) == 1 {
+				e := a.elems[0]
+				if e.IsNull() {
+					return ""
+				}
+				return e.toStr()
+			}
 			parts := make([]string, len(a.elems))
 			for i, e := range a.elems {
 				if e.IsNull() {
