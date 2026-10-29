@@ -210,6 +210,9 @@ func add(a, b Value) Value {
 	if a.tag == tStr || b.tag == tStr {
 		return Str(a.toStr() + b.toStr())
 	}
+	if a.tag == tNum && b.tag == tNum {
+		return Num(a.n + b.n)
+	}
 	return Num(a.toNumber() + b.toNumber())
 }
 
