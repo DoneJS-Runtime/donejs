@@ -268,7 +268,7 @@ func (vm *VM) objectCtor() Value {
 		if o == nil {
 			return ArrVal(NewArr(0))
 		}
-		var out []Value
+		out := make([]Value, 0, len(o.props))
 		for _, k := range o.keys() {
 			out = append(out, o.props[k])
 		}
