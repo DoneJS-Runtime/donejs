@@ -7,6 +7,7 @@ package jit
 // instance at property-read time, the way array methods are.
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"strconv"
@@ -464,12 +465,11 @@ func (vm *VM) u8Method(o *Obj, name string) (Value, bool) {
 
 // bytesIndex finds b in w starting at from.
 func bytesIndex(w []byte, b byte, from int) int {
-	for i := from; i < len(w); i++ {
-		if w[i] == b {
-			return i
-		}
+	i := bytes.IndexByte(w[from:], b)
+	if i < 0 {
+		return -1
 	}
-	return -1
+	return from + i
 }
 
 // argsAt returns args[i] or undefined — the argument accessor every native
