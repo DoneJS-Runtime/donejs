@@ -515,9 +515,19 @@ func (vm *VM) loop() (Value, error) {
 			a := st.pop()
 			st.push(pow(a, b))
 		case OpNeg:
-			st.push(Num(-st.pop().toNumber()))
+			a := st.pop()
+			if a.tag == tNum {
+				st.push(Num(-a.n))
+			} else {
+				st.push(Num(-a.toNumber()))
+			}
 		case OpNot:
-			st.push(Bool(!st.pop().truthy()))
+			a := st.pop()
+			if a.tag == tBool {
+				st.push(Bool(a.n == 0))
+			} else {
+				st.push(Bool(!a.truthy()))
+			}
 		case OpBitNot:
 			st.push(Num(float64(^int64(st.pop().toNumber()))))
 		case OpBitAnd:

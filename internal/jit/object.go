@@ -295,6 +295,12 @@ func (vm *VM) builtinMethod(idx int, a *Arr) Value {
 			if len(args) > 0 {
 				sep = args[0].toStr()
 			}
+			if len(a.elems) == 0 {
+				return Str("")
+			}
+			if len(a.elems) == 1 {
+				return Str(a.elems[0].toStr())
+			}
 			var sb strings.Builder
 			for i, e := range a.elems {
 				if i > 0 {
@@ -610,6 +616,12 @@ func flattenArr(a *Arr, depth int) *Arr {
 
 // arrJoin renders an array the way Array.prototype.join does.
 func arrJoin(a *Arr) string {
+	if len(a.elems) == 0 {
+		return ""
+	}
+	if len(a.elems) == 1 {
+		return a.elems[0].toStr()
+	}
 	sep := ","
 	var sb strings.Builder
 	for i, e := range a.elems {
