@@ -608,10 +608,9 @@ func (vm *VM) loop() (Value, error) {
 		case OpCallMethod:
 			nargs := int(in.B)
 			obj := st.s[st.sp-1-nargs]
-			args := make([]Value, nargs)
-			for i := 0; i < nargs; i++ {
-				args[i] = st.s[st.sp-nargs+i]
-			}
+			// Arguments already live on the operand stack; alias the subslice
+			// instead of copying them into a fresh buffer per call.
+			args := st.s[st.sp-nargs : st.sp]
 			cs := f.proto.Consts[in.A].AsStr()
 			name, desc := cs, cs
 			if i := strings.IndexByte(cs, 0); i >= 0 {
