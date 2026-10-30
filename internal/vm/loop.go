@@ -65,12 +65,14 @@ func (rt *Runtime) fireDueTimers() {
 				due = append(due, t)
 			}
 		}
-		sort.Slice(due, func(i, j int) bool {
-			if due[i].when.Equal(due[j].when) {
-				return due[i].id < due[j].id
-			}
-			return due[i].when.Before(due[j].when)
-		})
+		if len(due) > 1 {
+			sort.Slice(due, func(i, j int) bool {
+				if due[i].when.Equal(due[j].when) {
+					return due[i].id < due[j].id
+				}
+				return due[i].when.Before(due[j].when)
+			})
+		}
 		for _, t := range due {
 			if t.interval > 0 {
 				t.when = now.Add(t.interval)
@@ -81,14 +83,6 @@ func (rt *Runtime) fireDueTimers() {
 		rt.mu.Unlock()
 		if len(due) == 0 {
 			return
-		}
-		if len(due) > 1 {
-			sort.Slice(due, func(i, j int) bool {
-				if due[i].when.Equal(due[j].when) {
-					return due[i].id < due[j].id
-				}
-				return due[i].when.Before(due[j].when)
-			})
 		}
 		for _, t := range due {
 			if rt.exitingNow() {
