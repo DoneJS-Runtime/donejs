@@ -143,7 +143,8 @@ func (v Value) truthy() bool {
 	case tBool:
 		return v.n != 0
 	case tNum:
-		return v.n != 0 && !math.IsNaN(v.n)
+		n := v.n
+		return n != 0 && n == n
 	case tStr:
 		return v.ref.(string) != ""
 	case tObj, tFunc, tHost:
