@@ -56,6 +56,9 @@ func (rt *Runtime) nextDeadline() (time.Time, bool) {
 }
 
 func (rt *Runtime) fireDueTimers() {
+	if len(rt.timers) == 0 {
+		return
+	}
 	for {
 		now := time.Now()
 		var due []*timerEntry
