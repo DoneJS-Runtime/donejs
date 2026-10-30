@@ -46,10 +46,7 @@ func (v Value) AsPromise() *Promise {
 }
 
 // isCallable reports whether v can be called as a function.
-func isCallable(v Value) bool {
-	_, cl := v.FuncParts()
-	return cl != nil || v.AsFunc() != nil || v.AsBuiltin() != nil || v.AsHost() != nil
-}
+func isCallable(v Value) bool { return v.tag == tFunc || v.tag == tHost }
 
 // settle records the settlement and schedules the subscribers.
 func (p *Promise) settle(state int, v Value) {
