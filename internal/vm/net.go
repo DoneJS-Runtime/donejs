@@ -156,10 +156,14 @@ func (rt *Runtime) socketObject(conn net.Conn) jit.Value {
 
 	go func() {
 		buf := make([]byte, 32*1024)
+		var chunk []byte
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				chunk := make([]byte, n)
+				if chunk == nil || cap(chunk) < n {
+					chunk = make([]byte, n)
+				}
+				chunk = chunk[:n]
 				copy(chunk, buf[:n])
 				rt.Enqueue(func() {
 					rt.emitEvent(sock, sockEmitter, "data", rt.toJS(binResult(chunk)))
