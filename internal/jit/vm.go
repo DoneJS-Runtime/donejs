@@ -2028,13 +2028,11 @@ func typeOf(v Value) string {
 }
 
 func strictEq(a, b Value) bool {
+	if a == b {
+		return true
+	}
 	if a.tag != b.tag {
 		return false
-	}
-	// Objects, functions and hosts compare by reference; identical pointers
-	// are equal without walking the tag switch or boxing through maps.
-	if a.tag == tObj || a.tag == tFunc || a.tag == tHost {
-		return a.ref == b.ref
 	}
 	if a.tag == tNum {
 		return a.n == b.n
