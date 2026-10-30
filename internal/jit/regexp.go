@@ -24,6 +24,9 @@ type regExpVal struct {
 	lastIndex  int
 	re         *regexp.Regexp
 	compErr    error
+	// bm memoizes the method wrappers returned by Get so repeat method calls
+	// on the same instance skip the bound-wrapper allocation.
+	bm map[string]Value
 }
 
 // NewRegExp builds a RegExp instance for a pattern and flags.
@@ -57,7 +60,21 @@ func methodName(args []Value) string {
 	return ""
 }
 
-func (h *regExpVal) Get(name string) Value { return Host(&boundRegExp{inst: h, name: name}) }
+func (h *regExpVal) Get(name string) Value {
+	if v, ok := h.bm[name]; ok {
+		return v
+	}
+	v := h.getMethod(name)
+	if v.IsFunc() {
+		if h.bm == nil {
+			h.bm = make(map[string]Value, 4)
+		}
+		h.bm[name] = v
+	}
+	return v
+}
+
+func (h *regExpVal) getMethod(name string) Value { return Host(&boundRegExp{inst: h, name: name}) }
 func (h *regExpVal) Set(name string, v Value) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
