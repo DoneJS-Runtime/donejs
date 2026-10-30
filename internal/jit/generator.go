@@ -187,7 +187,7 @@ func (it *iterHost) next(args []Value) Value {
 		}
 	case iterStr:
 		if it.i < len(it.s) {
-			v, it.i = Str(string(it.s[it.i])), it.i+1
+			v, it.i = Str(singleCharCache[it.s[it.i]]), it.i+1
 			done = false
 		}
 	case iterU8:
