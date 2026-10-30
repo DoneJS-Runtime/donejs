@@ -538,26 +538,51 @@ func (vm *VM) loop() (Value, error) {
 				st.push(Bool(!a.truthy()))
 			}
 		case OpBitNot:
-			st.push(Num(float64(^int64(st.pop().toNumber()))))
+			a := st.pop()
+			if a.tag == tNum {
+				st.push(Num(float64(^int64(a.n))))
+			} else {
+				st.push(Num(float64(^int64(a.toNumber()))))
+			}
 		case OpBitAnd:
 			b := st.pop()
 			a := st.pop()
+			if a.tag == tNum && b.tag == tNum {
+				st.push(Num(float64(int32(a.n) & int32(b.n))))
+				continue
+			}
 			st.push(Num(float64(int32(a.toNumber()) & int32(b.toNumber()))))
 		case OpBitOr:
 			b := st.pop()
 			a := st.pop()
+			if a.tag == tNum && b.tag == tNum {
+				st.push(Num(float64(int32(a.n) | int32(b.n))))
+				continue
+			}
 			st.push(Num(float64(int32(a.toNumber()) | int32(b.toNumber()))))
 		case OpBitXor:
 			b := st.pop()
 			a := st.pop()
+			if a.tag == tNum && b.tag == tNum {
+				st.push(Num(float64(int32(a.n) ^ int32(b.n))))
+				continue
+			}
 			st.push(Num(float64(int32(a.toNumber()) ^ int32(b.toNumber()))))
 		case OpShl:
 			b := st.pop()
 			a := st.pop()
+			if a.tag == tNum && b.tag == tNum {
+				st.push(Num(float64(int32(a.n) << (int32(b.n) & 0x1f))))
+				continue
+			}
 			st.push(Num(float64(int32(a.toNumber()) << (int32(b.toNumber()) & 0x1f))))
 		case OpShr:
 			b := st.pop()
 			a := st.pop()
+			if a.tag == tNum && b.tag == tNum {
+				st.push(Num(float64(int32(a.n) >> (int32(b.n) & 0x1f))))
+				continue
+			}
 			st.push(Num(float64(int32(a.toNumber()) >> (int32(b.toNumber()) & 0x1f))))
 		case OpEq:
 			b := st.pop()
