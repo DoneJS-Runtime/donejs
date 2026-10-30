@@ -2102,10 +2102,12 @@ func looseEq(a, b Value) bool {
 
 func compare(a, b Value) int {
 	if a.tag == tStr && b.tag == tStr {
-		if a.AsStr() < b.AsStr() {
+		x := a.AsStr()
+		y := b.AsStr()
+		if x < y {
 			return -1
 		}
-		if a.AsStr() > b.AsStr() {
+		if x > y {
 			return 1
 		}
 		return 0
