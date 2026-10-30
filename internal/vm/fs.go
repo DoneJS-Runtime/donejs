@@ -234,6 +234,14 @@ func (rt *Runtime) argBytes(args []jit.Value, i int) []byte {
 	if v.IsUndef() || v.IsNull() {
 		return nil
 	}
+	// Binary views short-circuit straight to their backing bytes; the generic
+	// path would run Export (allocating a map) just to throw it away.
+	if o := v.AsObj(); o != nil {
+		switch jit.KindOf(o) {
+		case jit.KindArrayBuffer, jit.KindUint8Array, jit.KindDataView:
+			return o.Bytes()
+		}
+	}
 	if s, ok := v.Export().(string); ok {
 		return []byte(s)
 	}
