@@ -163,6 +163,16 @@ func (v Value) truthy() bool {
 	return false
 }
 
+// asInt returns the value's numeric payload, applying ToNumber for values
+// that are not numbers already. The numeric tag is checked inline so hot index
+// paths skip the full ToNumber tag switch.
+func (v Value) asInt() int {
+	if v.tag == tNum {
+		return int(v.n)
+	}
+	return int(v.toNumber())
+}
+
 // toNumber follows ToNumber for the types we have.
 func (v Value) toNumber() float64 {
 	switch v.tag {

@@ -817,9 +817,9 @@ func (vm *VM) loop() (Value, error) {
 			if ob := o.AsObj(); ob != nil && ob.kind != kindNone {
 				st.push(vm.typedIndex(ob, k))
 			} else if a := o.AsArr(); a != nil {
-				st.push(a.get(int(k.toNumber())))
+				st.push(a.get(k.asInt()))
 			} else if o.tag == tStr {
-				i := int(k.toNumber())
+				i := k.asInt()
 				s := o.AsStr()
 				if i >= 0 && i < len(s) {
 					st.push(Str(singleCharCache[s[i]]))
@@ -841,7 +841,7 @@ func (vm *VM) loop() (Value, error) {
 			if ob := o.AsObj(); ob != nil && ob.kind != kindNone {
 				typedSetIndex(ob, k, v)
 			} else if a := o.AsArr(); a != nil {
-				a.set(int(k.toNumber()), v)
+				a.set(k.asInt(), v)
 			} else {
 				if ste := vm.setField(o, k.toStr(), v); ste != nil {
 					f.pending, f.pendingF = ste.Value, true
@@ -1137,7 +1137,7 @@ func (vm *VM) loop() (Value, error) {
 			if ob := o.AsObj(); ob != nil && ob.kind == kindNone {
 				delete(ob.props, k.toStr())
 			} else if a := o.AsArr(); a != nil {
-				a.set(int(k.toNumber()), Undef())
+				a.set(k.asInt(), Undef())
 			}
 			st.push(Bool(true))
 		case OpYield:
