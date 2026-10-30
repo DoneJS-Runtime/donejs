@@ -284,6 +284,10 @@ type builtin struct {
 	fn    func([]Value) Value
 	name  string
 	props map[string]Value
+	// missCache memoizes dynamic method wrappers returned on a property miss
+	// (e.g. Math.sqrt-like virtual names), so unknown lookups stop allocating
+	// a fresh builtin wrapper each time.
+	missCache map[string]Value
 	// recvFirst marks a prototype method whose first argument is the receiver,
 	// so `obj.m(x)` and `m.call(obj, x)` both read as fn(obj, x).
 	recvFirst bool
@@ -1672,7 +1676,15 @@ func (vm *VM) getField(o Value, name string) (Value, *ThrowError) {
 		if name == "prototype" && vm.numberProto != nil && b.name == "Number" {
 			return ObjVal(vm.numberProto), nil
 		}
-		return BuiltinFn(b.name, b.fn), nil
+		if v, ok := b.missCache[name]; ok {
+			return v, nil
+		}
+		v := BuiltinFn(b.name, b.fn)
+		if b.missCache == nil {
+			b.missCache = map[string]Value{}
+		}
+		b.missCache[name] = v
+		return v, nil
 	}
 	if cls := o.AsClass(); cls != nil {
 		if cls.Static != nil {
