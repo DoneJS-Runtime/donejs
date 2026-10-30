@@ -511,10 +511,14 @@ func (rt *Runtime) httpRequest(opts jit.Value, cb jit.Value, useTLS bool) jit.Va
 			}
 			go func() {
 				buf := make([]byte, 32*1024)
+				var chunk []byte
 				for {
 					n, err := resp.Body.Read(buf)
 					if n > 0 {
-						chunk := make([]byte, n)
+						if chunk == nil || cap(chunk) < n {
+							chunk = make([]byte, n)
+						}
+						chunk = chunk[:n]
 						copy(chunk, buf[:n])
 						rt.Enqueue(func() {
 							rt.emitEvent(resObj, resEmitter, "data", rt.toJS(binResult(chunk)))
