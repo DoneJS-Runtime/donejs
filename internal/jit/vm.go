@@ -351,7 +351,7 @@ func (vm *VM) Run(src string) (Value, error) {
 	}
 	proto := NewCompiler().Compile(p)
 	vm.frames = vm.frames[:0]
-	vm.frames = append(vm.frames, newFrame(proto))
+	vm.frames = append(vm.frames, frameFor(proto))
 	return vm.loop()
 }
 
