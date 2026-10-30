@@ -204,6 +204,10 @@ func (o *Obj) del(name string) {
 // Arr is an array: index-keyed storage with a length, stored as an Obj.
 type Arr struct {
 	elems []Value
+	// bm memoizes this array's builtin method wrappers (keyed by the
+	// arrayMethods index) so repeated `a.push(x)`-style calls do not
+	// allocate a fresh builtin closure per call.
+	bm map[int]*builtin
 }
 
 func NewArr(n int) *Arr { return &Arr{elems: make([]Value, n)} }
@@ -263,7 +267,14 @@ func arrayMethod(name string) int {
 
 // builtinMethod returns a host function bound to a specific array method.
 func (vm *VM) builtinMethod(idx int, a *Arr) Value {
-	return Value{tag: tFunc, ref: &builtin{fn: func(args []Value) Value {
+	if a.bm != nil {
+		if b, ok := a.bm[idx]; ok {
+			return Value{tag: tFunc, ref: b}
+		}
+	} else {
+		a.bm = make(map[int]*builtin, 4)
+	}
+	b := &builtin{fn: func(args []Value) Value {
 		switch arrayMethods[idx] {
 		case "push":
 			a.elems = append(a.elems, args...)
@@ -594,7 +605,9 @@ func (vm *VM) builtinMethod(idx int, a *Arr) Value {
 			return ArrVal(na)
 		}
 		return Undef()
-	}}}
+	}}
+	a.bm[idx] = b
+	return Value{tag: tFunc, ref: b}
 }
 
 // flattenArr recursively flattens an array up to depth levels.

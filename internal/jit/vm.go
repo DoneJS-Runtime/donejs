@@ -93,7 +93,7 @@ type VM struct {
 	jobs      []func() // microtasks: promise reactions and awaited continuations
 	// jobHead is the read cursor into jobs; consumed slots are skipped so the
 	// queue does not reslice (and reallocate) on every drain.
-	jobHead  int
+	jobHead int
 	// GlobalLookup resolves a global name the interpreter does not own itself.
 	// A host runtime (internal/vm) uses this to expose its own globals —
 	// console, process, require, … — to entry scripts without copying them.
@@ -730,7 +730,7 @@ func (vm *VM) loop() (Value, error) {
 			// into a buffer and replay forwards so insertion order is kept.
 			pairs := vm.scratch
 			if cap(pairs) < 2*n {
-				pairs = make([]Value, 2 * n)
+				pairs = make([]Value, 2*n)
 				vm.scratch = pairs
 			}
 			pairs = pairs[:2*n]
