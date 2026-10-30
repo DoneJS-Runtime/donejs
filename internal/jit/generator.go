@@ -129,6 +129,10 @@ type iterHost struct {
 	coll    func(i int) (Value, bool)
 	stopped bool
 	i       int
+	// nextFn / selfFn memoize the `next` and Symbol.iterator wrappers so the
+	// one-next-per-iteration loop does not allocate a closure per step.
+	nextFn Value
+	selfFn Value
 }
 
 func (it *iterHost) Call(args []Value) Value { return Host(it) }
@@ -139,7 +143,10 @@ func (it *iterHost) Type() string            { return "object" }
 func (it *iterHost) Get(name string) Value {
 	switch name {
 	case "next":
-		return BuiltinFn("next", func(a []Value) Value { return it.next(a) })
+		if it.nextFn.IsUndef() {
+			it.nextFn = BuiltinFn("next", func(a []Value) Value { return it.next(a) })
+		}
+		return it.nextFn
 	case "return":
 		it.stopped = true
 		switch it.kind {
@@ -155,7 +162,10 @@ func (it *iterHost) Get(name string) Value {
 		return iterResult(Undef(), true)
 	}
 	if name == symIteratorKey {
-		return BuiltinFn("[Symbol.iterator]", func(a []Value) Value { return Host(it) })
+		if it.selfFn.IsUndef() {
+			it.selfFn = BuiltinFn("[Symbol.iterator]", func(a []Value) Value { return Host(it) })
+		}
+		return it.selfFn
 	}
 	return Undef()
 }
