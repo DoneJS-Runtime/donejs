@@ -854,7 +854,7 @@ func (vm *VM) loop() (Value, error) {
 			}
 			st.push(v)
 		case OpTypeof:
-			st.push(Str(typeOf(st.pop())))
+			st.push(Value{tag: tStr, ref: typeOf(st.pop())})
 		case OpInstanceOf:
 			rhs := st.pop()
 			lhs := st.pop()
