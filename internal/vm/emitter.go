@@ -99,6 +99,10 @@ func (e *goEmitter) names() []string {
 // emit dispatches an event, returning true when a listener handled it.
 func (e *goEmitter) emit(rt *Runtime, this jit.Value, event string, args ...jit.Value) bool {
 	e.mu.Lock()
+	if len(e.listeners[event]) == 0 {
+		e.mu.Unlock()
+		return false
+	}
 	list := append([]*goListener{}, e.listeners[event]...)
 	e.mu.Unlock()
 	if len(list) == 0 {
