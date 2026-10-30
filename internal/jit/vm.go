@@ -688,9 +688,7 @@ func (vm *VM) loop() (Value, error) {
 			if pushed {
 				continue
 			}
-			for i := 0; i <= nargs; i++ {
-				st.pop()
-			}
+			st.sp -= nargs + 1
 			st.push(res)
 		case OpCallDynamic:
 			arr := st.pop()
