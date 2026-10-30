@@ -129,8 +129,8 @@ func (v Value) AsObject() *Obj { return v.AsObj() }
 // AsArray exposes the array payload (used by the host bridge).
 func (v Value) AsArray() *Arr { return v.AsArr() }
 func (v Value) AsStr() string {
-	if s, ok := v.ref.(string); ok {
-		return s
+	if v.tag == tStr {
+		return v.ref.(string)
 	}
 	return ""
 }
