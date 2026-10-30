@@ -704,19 +704,13 @@ func (vm *VM) loop() (Value, error) {
 				f.pendingF = true
 				continue
 			}
-			st.push(callee)
-			for _, a := range args {
-				st.push(a)
-			}
 			if cp, cl := callee.FuncParts(); cp != nil {
 				if res, pushed := vm.startCall(cp, cl, len(args), Undef(), args, nil); !pushed {
-					st.sp -= len(args) + 1
 					st.push(res)
 					continue
 				}
 				continue
 			}
-			st.sp -= len(args) + 1
 			dres, dte := vm.callBuiltin(callee, args)
 			if dte != nil {
 				f.pending, f.pendingF = dte.Value, true
