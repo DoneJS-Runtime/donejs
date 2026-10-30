@@ -287,15 +287,16 @@ func (v Value) toStr() string {
 				}
 				return e.toStr()
 			}
-			parts := make([]string, len(a.elems))
+			var sb strings.Builder
 			for i, e := range a.elems {
-				if e.IsNull() {
-					parts[i] = ""
-				} else {
-					parts[i] = e.toStr()
+				if i > 0 {
+					sb.WriteString(",")
+				}
+				if !e.IsNull() {
+					sb.WriteString(e.toStr())
 				}
 			}
-			return strings.Join(parts, ",")
+			return sb.String()
 		}
 		return "[object Object]"
 	case tHost:
