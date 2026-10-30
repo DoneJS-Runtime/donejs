@@ -199,11 +199,13 @@ func (vm *VM) vmNumberCtor() Value {
 	vm.numberProto = NewObj()
 	props := map[string]Value{
 		"isInteger": BuiltinFn("isInteger", func(a []Value) Value {
-			return Bool(numArg(a) == math.Trunc(numArg(a)) && numArg(a) >= -9007199254740991 && numArg(a) <= 9007199254740991)
+			n := numArg(a)
+			return Bool(n == math.Trunc(n) && n >= -9007199254740991 && n <= 9007199254740991)
 		}),
 		"isNaN": BuiltinFn("isNaN", func(a []Value) Value { return Bool(numArg(a) != numArg(a)) }),
 		"isFinite": BuiltinFn("isFinite", func(a []Value) Value {
-			return Bool(numArg(a) == numArg(a) && numArg(a) != math.Inf(1) && numArg(a) != math.Inf(-1))
+			n := numArg(a)
+			return Bool(n == n && n != math.Inf(1) && n != math.Inf(-1))
 		}),
 		"isSafeInteger": BuiltinFn("isSafeInteger", func(a []Value) Value {
 			n := numArg(a)
