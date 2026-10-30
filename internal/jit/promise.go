@@ -25,6 +25,9 @@ type Promise struct {
 	value     Value
 	reason    Value
 	reactions []promiseReaction
+	// bm memoizes the then/catch/finally wrappers returned by Get so repeated
+	// method calls on the same promise skip the closure allocation.
+	bm map[string]Value
 }
 
 func newPromise(vm *VM) *Promise {
@@ -138,7 +141,22 @@ func (p *Promise) Call([]Value) Value {
 // New runs the executor of `new Promise(executor)`.
 func (p *Promise) New([]Value) Value { return Host(p) }
 
+// Get returns a promise method, memoizing the wrapper on the promise itself.
 func (p *Promise) Get(name string) Value {
+	if v, ok := p.bm[name]; ok {
+		return v
+	}
+	v := p.getMethod(name)
+	if v.IsFunc() {
+		if p.bm == nil {
+			p.bm = make(map[string]Value, 3)
+		}
+		p.bm[name] = v
+	}
+	return v
+}
+
+func (p *Promise) getMethod(name string) Value {
 	switch name {
 	case "then":
 		return builtinFn("then", func(args []Value) Value {
