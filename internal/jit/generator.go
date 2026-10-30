@@ -27,6 +27,9 @@ type jsGenerator struct {
 	done     bool
 	awaiting bool       // suspended inside an await, promise still unsettled
 	pending  []*Promise // promises outstanding next() calls wait on
+	// bm memoizes the next/return/throw wrappers returned by Get so repeated
+	// iteration steps skip the closure allocation.
+	bm map[string]Value
 }
 
 // settle completes the promises a pending next() returned, once the body
@@ -202,7 +205,22 @@ func (it *iterHost) next(args []Value) Value {
 	return iterResult(v, done)
 }
 
+// Get returns a generator method, memoizing the wrapper on the generator.
 func (g *jsGenerator) Get(name string) Value {
+	if v, ok := g.bm[name]; ok {
+		return v
+	}
+	v := g.getMethod(name)
+	if v.IsFunc() {
+		if g.bm == nil {
+			g.bm = make(map[string]Value, 3)
+		}
+		g.bm[name] = v
+	}
+	return v
+}
+
+func (g *jsGenerator) getMethod(name string) Value {
 	switch name {
 	case "next":
 		return BuiltinFn("next", func(a []Value) Value {
