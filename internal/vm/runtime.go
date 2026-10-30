@@ -72,6 +72,10 @@ type Runtime struct {
 
 	natives map[string]jit.Value
 
+	// urlCache memoizes successful URL parses keyed by "raw\x00base" so
+	// repeated parses of the same URL skip the WHATWG component walk.
+	urlCache map[string]jit.Value
+
 	argv     []string
 	mainFile string
 	mainDir  string
@@ -106,6 +110,7 @@ func New(opts Options) *Runtime {
 		modCache:  map[string]*jsModule{},
 		progCache: map[string]*jit.FuncProto{},
 		resCache:  map[string]string{},
+		urlCache:  map[string]jit.Value{},
 		esModules: map[string]*esModule{},
 		fds:       map[int]*os.File{},
 		natives:   map[string]jit.Value{},

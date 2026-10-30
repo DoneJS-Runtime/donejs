@@ -17,6 +17,10 @@ func (rt *Runtime) registerURL() {
 		if len(args) > 1 && !args[1].IsUndef() {
 			base = args[1].String()
 		}
+		key := raw + "\x00" + base
+		if v, ok := rt.urlCache[key]; ok {
+			return v
+		}
 		u, err := url.Parse(raw)
 		if err != nil {
 			panic(rt.jsThrow(err))
@@ -28,7 +32,7 @@ func (rt *Runtime) registerURL() {
 			}
 			u = b.ResolveReference(u)
 		}
-		return rt.toJS(map[string]any{
+		v := rt.toJS(map[string]any{
 			"href":     u.String(),
 			"protocol": u.Scheme + ":",
 			"host":     u.Host,
@@ -43,6 +47,8 @@ func (rt *Runtime) registerURL() {
 			"hostName": u.Hostname(),
 			"path":     u.Path,
 		})
+		rt.urlCache[key] = v
+		return v
 	})
 
 	// resolve implements new URL(relative, base) semantics.
