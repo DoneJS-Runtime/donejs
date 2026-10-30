@@ -51,6 +51,11 @@ type Runtime struct {
 
 	modCache  map[string]*jsModule
 	progCache map[string]*jit.FuncProto
+	// resCache memoizes successful module resolutions keyed by
+	// "dir\x00specifier", so repeated require/import calls never re-stat the
+	// filesystem. Only hits are stored: a failed resolution stays retryable
+	// when the file appears later.
+	resCache map[string]string
 
 	// esModules holds ES module namespaces keyed by resolved file path.
 	esModules map[string]*esModule
@@ -97,6 +102,7 @@ func New(opts Options) *Runtime {
 		cbs:       map[uint64]jit.Value{},
 		modCache:  map[string]*jsModule{},
 		progCache: map[string]*jit.FuncProto{},
+		resCache:  map[string]string{},
 		esModules: map[string]*esModule{},
 		fds:       map[int]*os.File{},
 		natives:   map[string]jit.Value{},

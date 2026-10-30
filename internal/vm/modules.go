@@ -19,6 +19,24 @@ type jsModule struct {
 
 var nodePrefix = func(s string) string { return strings.TrimPrefix(s, "node:") }
 
+// resKey builds the resolution cache key for one (dir, spec) pair.
+func resKey(dir, spec string) string { return dir + "\x00" + spec }
+
+// resGet returns a memoized successful resolution for (dir, spec).
+func (rt *Runtime) resGet(key string) (string, bool) {
+	rt.mu.Lock()
+	p, ok := rt.resCache[key]
+	rt.mu.Unlock()
+	return p, ok
+}
+
+// resPut memoizes a successful resolution for (dir, spec).
+func (rt *Runtime) resPut(key, p string) {
+	rt.mu.Lock()
+	rt.resCache[key] = p
+	rt.mu.Unlock()
+}
+
 // requireFrom implements CommonJS resolution starting at dir.
 func (rt *Runtime) requireFrom(dir string, spec string) (jit.Value, error) {
 	spec = nodePrefix(spec)
@@ -31,22 +49,31 @@ func (rt *Runtime) requireFrom(dir string, spec string) (jit.Value, error) {
 	if isBuiltin(spec) {
 		return rt.runBuiltin(spec)
 	}
+	key := resKey(dir, spec)
 	// relative / absolute
 	if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") || filepath.IsAbs(spec) {
+		if cached, ok := rt.resGet(key); ok {
+			return rt.loadModule(cached, false)
+		}
 		p := spec
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(dir, spec)
 		}
 		if resolved, ok := rt.resolveFile(p); ok {
+			rt.resPut(key, resolved)
 			return rt.loadModule(resolved, false)
 		}
 		return jit.Undef(), fmt.Errorf("Cannot find module '%s'", spec)
 	}
 	// bare specifier: walk node_modules upwards
+	if cached, ok := rt.resGet(key); ok {
+		return rt.loadModule(cached, false)
+	}
 	d := dir
 	for {
 		nm := filepath.Join(d, "node_modules")
 		if resolved, ok := rt.resolveNodeModules(nm, spec); ok {
+			rt.resPut(key, resolved)
 			return rt.loadModule(resolved, false)
 		}
 		parent := filepath.Dir(d)
