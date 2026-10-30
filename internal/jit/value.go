@@ -327,6 +327,14 @@ func numToStr(f float64) string {
 }
 
 func trimInt(f float64) string {
+	// integral fast path: render exactly when the value fits an int64 so the
+	// common integer case skips the per-digit float division loop.
+	if f >= -9e18 && f < 9e18 {
+		i := int64(f)
+		if float64(i) == f {
+			return strconv.FormatInt(i, 10)
+		}
+	}
 	// integer fast path
 	neg := f < 0
 	if neg {

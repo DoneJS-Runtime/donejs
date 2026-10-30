@@ -35,9 +35,9 @@ type Runtime struct {
 	jit  *jit.VM
 	jobs chan func()
 
-	mu       sync.Mutex
-	timers   map[uint64]*timerEntry
-	nextID   uint64
+	mu     sync.Mutex
+	timers map[uint64]*timerEntry
+	nextID uint64
 	// handles counts live handles; atomic because ref/unref run on socket
 	// goroutines while the loop reads it from the JS thread.
 	handles  atomic.Int64
