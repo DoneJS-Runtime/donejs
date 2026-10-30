@@ -256,7 +256,7 @@ func (vm *VM) vmArrayCtor() Value {
 			case src.tag == tStr:
 				s := src.AsStr()
 				for i := 0; i < len(s); i++ {
-					arr.elems = append(arr.elems, Str(string(s[i])))
+					arr.elems = append(arr.elems, Str(singleCharCache[s[i]]))
 				}
 			case src.AsObj() != nil:
 				o := src.AsObj()
