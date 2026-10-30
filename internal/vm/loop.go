@@ -135,11 +135,10 @@ func (rt *Runtime) Loop() (code int) {
 		rt.mu.Lock()
 		deadline, hasTimer := rt.nextDeadline()
 		pending := len(rt.jobs)
-		handles := rt.handles
 		inflight := rt.pending
 		rt.mu.Unlock()
 
-		if pending == 0 && handles == 0 && inflight == 0 && !hasTimer && !rt.jit.HasJobs() {
+		if pending == 0 && rt.handles.Load() == 0 && inflight == 0 && !hasTimer && !rt.jit.HasJobs() {
 			return rt.currentExit()
 		}
 		if hasTimer {

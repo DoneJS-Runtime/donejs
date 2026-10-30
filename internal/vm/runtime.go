@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"donejs/internal/jit"
@@ -37,7 +38,9 @@ type Runtime struct {
 	mu       sync.Mutex
 	timers   map[uint64]*timerEntry
 	nextID   uint64
-	handles  int
+	// handles counts live handles; atomic because ref/unref run on socket
+	// goroutines while the loop reads it from the JS thread.
+	handles  atomic.Int64
 	pending  int
 	exiting  bool
 	exitCode int
@@ -188,18 +191,13 @@ func (rt *Runtime) Enqueue(fn func()) {
 }
 
 func (rt *Runtime) ref() {
-	rt.mu.Lock()
-	rt.handles++
-	rt.mu.Unlock()
+	rt.handles.Add(1)
 }
 
 func (rt *Runtime) unref() {
-	rt.mu.Lock()
-	rt.handles--
-	if rt.handles < 0 {
-		rt.handles = 0
+	if v := rt.handles.Add(-1); v < 0 {
+		rt.handles.Store(0)
 	}
-	rt.mu.Unlock()
 }
 
 func (rt *Runtime) exit(code int) {
