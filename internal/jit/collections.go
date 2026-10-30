@@ -20,12 +20,18 @@ type jsMap struct {
 	pairs  []mapPair
 	index  map[string]int
 	hasNaN bool
+	// bm memoizes the method wrappers returned by Get so repeated
+	// `m.get(k)`-style calls skip the closure allocation.
+	bm map[string]Value
 }
 
 type jsSet struct {
 	vm     *VM
 	items  []Value
 	member map[string]bool
+	// bm memoizes the method wrappers returned by Get so repeated
+	// `s.has(v)`-style calls skip the closure allocation.
+	bm map[string]Value
 }
 
 func (m *jsMap) Call([]Value) Value {
@@ -72,7 +78,22 @@ func (m *jsMap) find(k Value) (int, bool) {
 	return i, true
 }
 
+// Get returns a Map method or property, memoizing wrappers on the map itself.
 func (m *jsMap) Get(name string) Value {
+	if v, ok := m.bm[name]; ok {
+		return v
+	}
+	v := m.getMethod(name)
+	if v.IsFunc() {
+		if m.bm == nil {
+			m.bm = make(map[string]Value, 4)
+		}
+		m.bm[name] = v
+	}
+	return v
+}
+
+func (m *jsMap) getMethod(name string) Value {
 	switch name {
 	case "size":
 		return Num(float64(len(m.pairs)))
@@ -205,7 +226,22 @@ func (m *jsMap) Set(string, Value) {}
 func (m *jsMap) Str() string       { return "[object Map]" }
 func (m *jsMap) Type() string      { return "object" }
 
+// Get returns a Set method or property, memoizing wrappers on the set itself.
 func (s *jsSet) Get(name string) Value {
+	if v, ok := s.bm[name]; ok {
+		return v
+	}
+	v := s.getMethod(name)
+	if v.IsFunc() {
+		if s.bm == nil {
+			s.bm = make(map[string]Value, 4)
+		}
+		s.bm[name] = v
+	}
+	return v
+}
+
+func (s *jsSet) getMethod(name string) Value {
 	switch name {
 	case "size":
 		return Num(float64(len(s.items)))
