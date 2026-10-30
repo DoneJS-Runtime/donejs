@@ -1168,6 +1168,11 @@ func (c *Compiler) binOp(op string) Op {
 }
 
 func (c *Compiler) logical(n *LogicalExpr) {
+	// Constant fold: `true || x`, `0 && x`, `null ?? x`, …
+	if folded, ok := c.foldLogical(n); ok {
+		c.emit(OpConst, c.constIndex(folded), 0)
+		return
+	}
 	c.expr(n.X)
 	c.emit(OpDup, 0, 0)
 	var j int
@@ -1183,6 +1188,62 @@ func (c *Compiler) logical(n *LogicalExpr) {
 	c.emit(OpPop, 0, 0)
 	c.expr(n.Y)
 	c.patch(j, len(c.cur.Code))
+}
+
+// foldLogical evaluates a short-circuit expression whose left operand is a
+// literal with known truthiness, so `false && doWork()` skips the right side
+// entirely at compile time.
+func (c *Compiler) foldLogical(n *LogicalExpr) (Value, bool) {
+	switch l := n.X.(type) {
+	case *BoolLit:
+		if n.Op == "&&" && !l.Value {
+			return c.constLogical(n.Y)
+		}
+		if (n.Op == "||" || n.Op == "??") && l.Value {
+			return Bool(l.Value), true
+		}
+	case *NumberLit:
+		if n.Op == "&&" && l.Value == 0 {
+			return c.constLogical(n.Y)
+		}
+		if (n.Op == "||" || n.Op == "??") && l.Value != 0 {
+			return Num(l.Value), true
+		}
+	case *StringLit:
+		if n.Op == "&&" && l.Value == "" {
+			return c.constLogical(n.Y)
+		}
+		if (n.Op == "||" || n.Op == "??") && l.Value != "" {
+			return Str(l.Value), true
+		}
+	case *NullLit:
+		if n.Op == "||" || n.Op == "??" {
+			return c.constLogical(n.Y)
+		}
+	case *UndefLit:
+		if n.Op == "||" || n.Op == "??" {
+			return c.constLogical(n.Y)
+		}
+	}
+	return Undef(), false
+}
+
+// constLogical folds the right-hand side of an already-decided
+// short-circuit.
+func (c *Compiler) constLogical(e Expr) (Value, bool) {
+	switch n := e.(type) {
+	case *BoolLit:
+		return Bool(n.Value), true
+	case *NumberLit:
+		return Num(n.Value), true
+	case *StringLit:
+		return Str(n.Value), true
+	case *NullLit:
+		return Null(), true
+	case *UndefLit:
+		return Undef(), true
+	}
+	return Undef(), false
 }
 
 func (c *Compiler) assign(n *AssignExpr) {
