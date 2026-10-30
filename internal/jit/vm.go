@@ -198,14 +198,14 @@ func (vm *VM) installBuiltins() {
 	}
 	// print joins its arguments with spaces, matching Node's console.log.
 	reg("print", func(a []Value) Value {
-		out := ""
+		var sb strings.Builder
 		for i, v := range a {
 			if i > 0 {
-				out += " "
+				sb.WriteString(" ")
 			}
-			out += v.toStr()
+			sb.WriteString(v.toStr())
 		}
-		vm.out(out)
+		vm.out(sb.String())
 		return Undef()
 	})
 	// Error / RangeError / SyntaxError constructors.
