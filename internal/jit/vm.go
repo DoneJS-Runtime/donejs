@@ -198,6 +198,14 @@ func (vm *VM) installBuiltins() {
 	}
 	// print joins its arguments with spaces, matching Node's console.log.
 	reg("print", func(a []Value) Value {
+		if len(a) == 0 {
+			vm.out("")
+			return Undef()
+		}
+		if len(a) == 1 {
+			vm.out(a[0].toStr())
+			return Undef()
+		}
 		var sb strings.Builder
 		for i, v := range a {
 			if i > 0 {
