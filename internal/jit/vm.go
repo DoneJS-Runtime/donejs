@@ -888,7 +888,8 @@ func (vm *VM) loop() (Value, error) {
 			}
 		case OpIterNext:
 			iterSlot := int(in.A)
-			if f.locals[iterSlot+3].toNumber() != 0 {
+			mode := f.locals[iterSlot+3]
+			if mode.tag == tNum && mode.n != 0 {
 				// Iterator protocol: one next() per iteration.
 				it := f.locals[iterSlot]
 				res, pushed, te := vm.callMethodValue(it, "next", "it.next", nil)
@@ -909,7 +910,7 @@ func (vm *VM) loop() (Value, error) {
 			}
 			idxSlot := iterSlot + 1
 			of := f.locals[iterSlot+2].toNumber() != 0
-			i := int(f.locals[idxSlot].toNumber())
+			i := f.locals[idxSlot].asInt()
 			if i < iterLen(f.locals[iterSlot]) {
 				st.push(iterElem(f.locals[iterSlot], i, of))
 				f.locals[idxSlot] = Num(float64(i + 1))
