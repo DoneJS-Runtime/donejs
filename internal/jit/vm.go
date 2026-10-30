@@ -2039,7 +2039,7 @@ func strictEq(a, b Value) bool {
 	}
 	switch a.tag {
 	case tStr:
-		return a.AsStr() == b.AsStr()
+		return a.ref.(string) == b.ref.(string)
 	case tBool:
 		return a.n == b.n
 	case tUndef, tNull:
