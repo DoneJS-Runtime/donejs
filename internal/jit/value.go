@@ -41,6 +41,16 @@ func ObjVal(o *Obj) Value     { return Value{tag: tObj, ref: o} }
 func ArrVal(a *Arr) Value     { return Value{tag: tObj, ref: a} }
 func Func(f *FuncProto) Value { return Value{tag: tFunc, ref: f} }
 
+// singleCharCache holds the 256 single-character strings so indexing into a
+// string returns a shared value instead of allocating per access.
+var singleCharCache = func() [256]string {
+	var s [256]string
+	for i := range s {
+		s[i] = string([]byte{byte(i)})
+	}
+	return s
+}()
+
 // Closure binds a function to the captured variables of the frame it was
 // created in. Functions with no captures are still wrapped so each function
 // value gets its own `prototype` object, matching one function object per
@@ -322,9 +332,27 @@ func numToStr(f float64) string {
 		return "0"
 	}
 	if f == math.Trunc(f) && math.Abs(f) < 1e21 {
-		return trimInt(f)
+		return smallIntStr(f)
 	}
 	return trimFloat(f)
+}
+
+// smallIntCache covers the small integer range, the shape of the counters and
+// array indices that dominate string conversions in hot loops; it skips the
+// per-conversion allocation entirely.
+var smallIntCache = func() [20001]string {
+	var s [20001]string
+	for i := range s {
+		s[i] = strconv.FormatInt(int64(i)-10000, 10)
+	}
+	return s
+}()
+
+func smallIntStr(f float64) string {
+	if f >= -10000 && f <= 10000 {
+		return smallIntCache[int(f)+10000]
+	}
+	return trimInt(f)
 }
 
 func trimInt(f float64) string {

@@ -351,7 +351,7 @@ func (vm *VM) spreadIterable(src Value, fn func(v Value)) *ThrowError {
 	if src.tag == tStr {
 		s := src.AsStr()
 		for i := 0; i < len(s); i++ {
-			fn(Str(string(s[i])))
+			fn(Str(singleCharCache[s[i]]))
 		}
 		return nil
 	}

@@ -822,7 +822,7 @@ func (vm *VM) loop() (Value, error) {
 				i := int(k.toNumber())
 				s := o.AsStr()
 				if i >= 0 && i < len(s) {
-					st.push(Str(string(s[i])))
+					st.push(Str(singleCharCache[s[i]]))
 				} else {
 					st.push(Undef())
 				}
@@ -1997,7 +1997,7 @@ func iterElem(v Value, i int, of bool) Value {
 	if v.tag == tStr {
 		s := v.AsStr()
 		if i < len(s) {
-			return Str(string(s[i]))
+			return Str(singleCharCache[s[i]])
 		}
 		return Undef()
 	}
