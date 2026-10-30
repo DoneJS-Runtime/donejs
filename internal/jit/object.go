@@ -36,6 +36,10 @@ type Obj struct {
 	// pflags tracks per-property flags; nil means every property is
 	// enumerable/writable/configurable.
 	pflags map[string]propFlags
+	// bm memoizes the builtin method wrappers for typed views (kindU8/AB/DV)
+	// so repeated `buf.fill(...)`-style calls do not allocate a fresh
+	// builtin closure per property lookup.
+	bm map[string]*builtin
 }
 
 // window returns the view's byte window over its backing array.

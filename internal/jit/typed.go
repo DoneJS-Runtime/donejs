@@ -332,7 +332,25 @@ func typedSetIndex(o *Obj, k Value, v Value) bool {
 }
 
 // u8Methods are the bound Uint8Array instance methods.
+// typedMethod resolves a typed-view method, memoizing the wrapper on the
+// object so repeat calls skip the closure allocation entirely.
 func (vm *VM) typedMethod(o *Obj, name string) (Value, bool) {
+	if b, ok := o.bm[name]; ok {
+		return Value{tag: tFunc, ref: b}, true
+	}
+	v, ok := vm.typedMethodUncached(o, name)
+	if ok {
+		if b := v.AsBuiltin(); b != nil {
+			if o.bm == nil {
+				o.bm = make(map[string]*builtin, 4)
+			}
+			o.bm[name] = b
+		}
+	}
+	return v, ok
+}
+
+func (vm *VM) typedMethodUncached(o *Obj, name string) (Value, bool) {
 	if o.kind == kindAB {
 		if name == "slice" {
 			return builtinFn("ArrayBuffer.slice", func(args []Value) Value {
