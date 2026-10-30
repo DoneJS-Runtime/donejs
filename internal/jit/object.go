@@ -691,17 +691,21 @@ func insertionSort(a []Value, less func(x, y Value) bool) {
 	}
 }
 
+// stringMethodByName indexes the string method names once so lookups are a
+// single hash instead of a linear scan per property access.
+var stringMethodByName = func() map[string]int {
+	m := make(map[string]int, len(stringMethods))
+	for i, n := range stringMethods {
+		m[n] = i
+	}
+	return m
+}()
+
 // stringMethod returns a bound host function for common String.prototype
 // methods, or Undef when the name is unknown.
 func stringMethod(name, s string) Value {
-	idx := -1
-	for i, m := range stringMethods {
-		if m == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	idx, ok := stringMethodByName[name]
+	if !ok {
 		return Undef()
 	}
 	return Value{tag: tFunc, ref: &builtin{fn: func(args []Value) Value {
