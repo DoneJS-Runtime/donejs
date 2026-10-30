@@ -534,6 +534,10 @@ func (vm *VM) loop() (Value, error) {
 			a := st.pop()
 			if a.tag == tBool {
 				st.push(Bool(a.n == 0))
+			} else if a.tag == tNum {
+				st.push(Bool(a.n == 0 || math.IsNaN(a.n)))
+			} else if a.tag == tStr {
+				st.push(Bool(a.AsStr() == ""))
 			} else {
 				st.push(Bool(!a.truthy()))
 			}
