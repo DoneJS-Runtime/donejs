@@ -720,7 +720,7 @@ func stringMethod(name, s string) Value {
 				i = int(args[0].toNumber())
 			}
 			if i >= 0 && i < len(s) {
-				return Str(string(s[i]))
+				return Str(singleCharCache[s[i]])
 			}
 			return Str("")
 		case "charCodeAt":
@@ -814,7 +814,7 @@ func stringMethod(name, s string) Value {
 			if sep == "" {
 				na := NewArr(len(s))
 				for i := 0; i < len(s); i++ {
-					na.elems[i] = Str(string(s[i]))
+					na.elems[i] = Str(singleCharCache[s[i]])
 				}
 				return ArrVal(na)
 			}
